@@ -1,0 +1,511 @@
+"""Wrike integration for fetching Site Records for due diligence reporting."""
+
+import json
+import logging
+import os
+import re
+from dataclasses import dataclass
+from typing import Any
+
+import requests
+from openai import OpenAI
+
+logger = logging.getLogger("[wrike]")
+
+WRIKE_API_BASE_URL = "https://www.wrike.com/api/v4"
+WRIKE_TIMEOUT_SECONDS = 20.0
+
+# Wrike Space ID - Site Records space
+WRIKE_SPACE_ID = "IEAGN6I6I5RFSYZI"
+
+# Site Record Custom Item Type
+WRIKE_SITE_RECORD_TYPE_ID = "IEAGN6I6PIAEZNHZ"
+
+# Key custom field IDs for Site Record
+WRIKE_CUSTOM_FIELDS: dict[str, str] = {
+    # Location fields
+    "market": "IEAGN6I6JUAIIP5D",
+    "ahj": "IEAGN6I6JUAJA4RM",
+    "address": "IEAGN6I6JUAIKSH3",
+    "address_alt": "IEAGN6I6JUAJJ4EV",
+    "address_county": "IEAGN6I6JUAJNUVF",
+    # Property fields
+    "square_footage": "IEAGN6I6JUAJJ4FC",
+    "square_footage_buildings": "IEAGN6I6JUAJJ4FE",
+    # Score fields
+    "enrollment_score": "IEAGN6I6JUAKGXNV",
+    "enrollment_score_plus": "IEAGN6I6JUAKGXNW",
+    "wealth_score": "IEAGN6I6JUAKGXNX",
+    "relative_wealth_score": "IEAGN6I6JUAKGXNZ",
+    "relative_enrollment_score": "IEAGN6I6JUAKDM2H",
+    "relative_enrollment_score_plus": "IEAGN6I6JUAKGXOL",
+    # Zoning / K-12 Status
+    "zoning": "IEAGN6I6JUAJA4QQ",
+    "k12_status": "IEAGN6I6JUAKGXNY",
+    # School
+    "school_type": "IEAGN6I6JUAITZSN",
+    "overall_site_stage": "IEAGN6I6JUAJU2PJ",
+    # Other
+    "site_poc": "IEAGN6I6JUAKEKBU",
+    "p1_accountable": "IEAGN6I6JUAJK2MQ",
+    "loi_signed_date": "IEAGN6I6JUAIOUVH",
+    "vendor_team": "IEAGN6I6JUAKDCYE",
+    "google_folder": "IEAGN6I6JUAIKGJH",
+}
+
+# Reverse mapping: ID -> name
+WRIKE_CUSTOM_FIELD_NAMES: dict[str, str] = {v: k for k, v in WRIKE_CUSTOM_FIELDS.items()}
+
+
+@dataclass(frozen=True)
+class WrikeConfig:
+    """Wrike API configuration."""
+
+    access_token: str
+
+
+class WrikeError(RuntimeError):
+    """Wrike API error."""
+
+    pass
+
+
+def load_wrike_config() -> WrikeConfig:
+    """Load Wrike configuration from environment variables."""
+    access_token = os.getenv("WRIKE_ACCESS_TOKEN", "")
+
+    if not access_token:
+        raise WrikeError(
+            "Missing WRIKE_ACCESS_TOKEN env var. Add it to .env file or process env."
+        )
+
+    logger.info("Wrike config loaded: space_id=%s", WRIKE_SPACE_ID)
+    return WrikeConfig(access_token=access_token)
+
+
+def _wrike_headers(access_token: str) -> dict[str, str]:
+    """Build Wrike API request headers."""
+    return {
+        "Authorization": f"bearer {access_token}",
+        "User-Agent": "due-diligence-reporter-mcp/1.0",
+    }
+
+
+def _raise_for_wrike_error(resp: requests.Response) -> None:
+    """Raise WrikeError if response is not successful."""
+    if resp.ok:
+        return
+    try:
+        body = resp.json()
+    except Exception:
+        body = {"raw": resp.text[:2000]}
+    raise WrikeError(f"Wrike API error {resp.status_code}: {body}")
+
+
+def enrich_custom_fields_with_names(record: dict[str, Any]) -> dict[str, Any]:
+    """Enrich custom fields in a Wrike record with human-readable names."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return record
+
+    enriched_fields: list[dict[str, Any]] = []
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            enriched_fields.append(field)
+            continue
+
+        field_id = field.get("id")
+        field_name = WRIKE_CUSTOM_FIELD_NAMES.get(field_id, field_id)
+        enriched_fields.append(
+            {
+                "name": field_name,
+                "id": field_id,
+                "value": field.get("value"),
+            }
+        )
+
+    return {**record, "customFields": enriched_fields}
+
+
+def extract_address_from_record(record: dict[str, Any]) -> str | None:
+    """Extract address from Wrike Site Record custom fields."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    address_field_id = WRIKE_CUSTOM_FIELDS["address"]
+
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("id") == address_field_id:
+            value = field.get("value", "")
+            if isinstance(value, str):
+                address = re.sub(r"<[^>]+>", "", value).strip()
+                return address if address else None
+
+    return None
+
+
+def extract_school_type_from_record(record: dict[str, Any]) -> str | None:
+    """Extract and normalise school_type from Wrike Site Record."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    school_type_field_id = WRIKE_CUSTOM_FIELDS["school_type"]
+
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("id") == school_type_field_id:
+            value = field.get("value", "")
+            if not isinstance(value, str):
+                continue
+            if "Microschool 25" in value or "Micro" in value:
+                return "micro"
+            elif "Growth 250" in value or value == "250":
+                return "250"
+            elif "Flagship 1000" in value or value == "1000":
+                return "1000"
+
+    return None
+
+
+def extract_google_folder_from_record(record: dict[str, Any]) -> str | None:
+    """Extract Google Drive folder URL from Wrike Site Record."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    folder_field_id = WRIKE_CUSTOM_FIELDS["google_folder"]
+
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("id") == folder_field_id:
+            value = field.get("value", "")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
+
+
+def extract_stage_from_record(record: dict[str, Any]) -> str | None:
+    """Extract overall_site_stage from Wrike Site Record."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    stage_field_id = WRIKE_CUSTOM_FIELDS["overall_site_stage"]
+
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("id") == stage_field_id:
+            value = field.get("value", "")
+            if isinstance(value, str):
+                return value
+
+    return None
+
+
+def get_site_record_by_id(
+    *, record_id: str, cfg: WrikeConfig | None = None
+) -> dict[str, Any]:
+    """Get a Site Record by its Wrike ID."""
+    if cfg is None:
+        cfg = load_wrike_config()
+
+    url = f"{WRIKE_API_BASE_URL}/folders/{record_id}"
+    logger.info("Fetching site record: %s", record_id)
+
+    resp = requests.get(
+        url,
+        headers=_wrike_headers(cfg.access_token),
+        timeout=WRIKE_TIMEOUT_SECONDS,
+    )
+    _raise_for_wrike_error(resp)
+
+    payload: dict[str, Any] = resp.json()
+    data = payload.get("data", [])
+
+    if not data:
+        raise WrikeError(f"Site record not found: {record_id}")
+
+    record = data[0]
+    logger.info("Site record fetched: %s", record.get("title"))
+    return record
+
+
+def resolve_permalink_to_id(*, permalink: str, cfg: WrikeConfig | None = None) -> str:
+    """Resolve a Wrike permalink to a folder/record ID."""
+    if cfg is None:
+        cfg = load_wrike_config()
+
+    url = f"{WRIKE_API_BASE_URL}/folders"
+    logger.info("Resolving permalink to record ID: %s", permalink)
+
+    resp = requests.get(
+        url,
+        headers=_wrike_headers(cfg.access_token),
+        params={"permalink": permalink},
+        timeout=WRIKE_TIMEOUT_SECONDS,
+    )
+    _raise_for_wrike_error(resp)
+
+    payload: dict[str, Any] = resp.json()
+    data = payload.get("data", [])
+
+    if not data:
+        raise WrikeError(f"Could not resolve permalink: {permalink}")
+
+    record = data[0]
+    record_id = record.get("id")
+
+    if not isinstance(record_id, str):
+        raise WrikeError(f"Invalid record ID from permalink: {permalink}")
+
+    logger.info("Resolved permalink to record ID: %s", record_id)
+    return record_id
+
+
+def _get_all_folder_ids(*, access_token: str) -> list[str]:
+    """Get all folder IDs from the Wrike space."""
+    url = f"{WRIKE_API_BASE_URL}/spaces/{WRIKE_SPACE_ID}/folders"
+    logger.info("Fetching all folder IDs from space %s", WRIKE_SPACE_ID)
+
+    resp = requests.get(
+        url,
+        headers=_wrike_headers(access_token),
+        timeout=WRIKE_TIMEOUT_SECONDS,
+    )
+    _raise_for_wrike_error(resp)
+
+    payload: dict[str, Any] = resp.json()
+    folder_ids: list[str] = []
+    data = payload.get("data", [])
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                folder_id = item.get("id")
+                if isinstance(folder_id, str):
+                    folder_ids.append(folder_id)
+
+    return folder_ids
+
+
+def _get_all_site_records(*, cfg: WrikeConfig) -> list[dict[str, Any]]:
+    """Get all Site Records from the Wrike space (all stages)."""
+    folder_ids = _get_all_folder_ids(access_token=cfg.access_token)
+    logger.info("Found %d folder IDs", len(folder_ids))
+
+    batch_size = 100
+    all_site_records: list[dict[str, Any]] = []
+
+    for i in range(0, len(folder_ids), batch_size):
+        batch = folder_ids[i : i + batch_size]
+        ids_param = ",".join(batch)
+        url = f"{WRIKE_API_BASE_URL}/folders/{ids_param}"
+
+        logger.info(
+            "Querying batch %d-%d of %d folders",
+            i + 1,
+            min(i + batch_size, len(folder_ids)),
+            len(folder_ids),
+        )
+
+        resp = requests.get(
+            url,
+            headers=_wrike_headers(cfg.access_token),
+            params={"fields": '["customItemTypeId","customFields"]'},
+            timeout=WRIKE_TIMEOUT_SECONDS,
+        )
+        _raise_for_wrike_error(resp)
+
+        payload: dict[str, Any] = resp.json()
+        data = payload.get("data", [])
+
+        if not isinstance(data, list):
+            continue
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if item.get("customItemTypeId") == WRIKE_SITE_RECORD_TYPE_ID:
+                all_site_records.append(item)
+
+    logger.info("Found %d total Site Records", len(all_site_records))
+    return all_site_records
+
+
+def _match_site_with_llm(
+    *, query: str, site_records: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Use LLM to match the provided query to the best Site Record by name or address."""
+    if not site_records:
+        logger.warning("No site records to match against")
+        return None
+
+    candidates: list[dict[str, Any]] = []
+    for record in site_records:
+        if not isinstance(record, dict):
+            continue
+
+        record_id = record.get("id")
+        title = record.get("title", "")
+        address = extract_address_from_record(record) or ""
+
+        candidates.append({"id": record_id, "title": title, "address": address})
+
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        logger.warning("OPENAI_API_KEY not found, falling back to exact title match")
+        # Simple fallback: title contains query
+        query_lower = query.lower().strip()
+        for record in site_records:
+            title = record.get("title", "")
+            if isinstance(title, str) and query_lower in title.lower():
+                return record
+        return None
+
+    client = OpenAI(api_key=openai_api_key)
+
+    system_prompt = (
+        "You are a site record matching assistant. Given a search query (site name or address) "
+        "and a list of candidate Site Records, identify which candidate best matches the query.\n\n"
+        "Consider title similarity, address similarity, abbreviations, and common variations.\n\n"
+        "Return ONLY a JSON object:\n"
+        '{"matched_id": "the ID of the best matching record", "reasoning": "brief explanation"}\n\n'
+        "If no good match is found, return:\n"
+        '{"matched_id": null, "reasoning": "explanation"}'
+    )
+
+    user_prompt = (
+        f"Search query: {query}\n\n"
+        f"Candidate Site Records:\n{json.dumps(candidates, indent=2)}\n\n"
+        "Which candidate best matches the search query?"
+    )
+
+    logger.info("Calling OpenAI to match site query: %s", query)
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    result_text = response.choices[0].message.content
+    if not result_text:
+        logger.error("Empty response from OpenAI")
+        return None
+
+    result: dict[str, str | None] = json.loads(result_text)
+    matched_id = result.get("matched_id")
+    reasoning = result.get("reasoning", "")
+
+    logger.info("LLM match result: matched_id=%s, reasoning=%s", matched_id, reasoning)
+
+    if not matched_id:
+        logger.warning("No matching Site Record found by LLM")
+        return None
+
+    for record in site_records:
+        if record.get("id") == matched_id:
+            return record
+
+    logger.warning("Matched ID %s not found in site_records", matched_id)
+    return None
+
+
+def _looks_like_wrike_id(value: str) -> bool:
+    """Return True if the value looks like a Wrike record ID (alphanumeric, 8-16 chars)."""
+    return bool(re.fullmatch(r"[A-Z0-9]{8,16}", value.strip()))
+
+
+def _looks_like_permalink(value: str) -> bool:
+    """Return True if the value looks like a Wrike permalink URL."""
+    return "wrike.com" in value.lower()
+
+
+def find_site_record(
+    *, site_name_or_id: str, cfg: WrikeConfig | None = None
+) -> dict[str, Any] | None:
+    """
+    Find a Site Record by name or ID.
+
+    - If it looks like a Wrike ID: fetch directly.
+    - If it looks like a permalink: resolve then fetch.
+    - Otherwise: search all Site Records and use LLM to find the best match.
+
+    Returns the Site Record dict enriched with human-readable custom field names,
+    or None if not found.
+    """
+    if cfg is None:
+        cfg = load_wrike_config()
+
+    query = site_name_or_id.strip()
+
+    # Direct ID lookup
+    if _looks_like_wrike_id(query):
+        logger.info("Query looks like a Wrike ID, fetching directly: %s", query)
+        try:
+            record = get_site_record_by_id(record_id=query, cfg=cfg)
+            return enrich_custom_fields_with_names(record)
+        except WrikeError as e:
+            logger.warning("Direct ID lookup failed (%s), falling back to name search", e)
+
+    # Permalink lookup
+    if _looks_like_permalink(query):
+        logger.info("Query looks like a permalink, resolving: %s", query)
+        try:
+            record_id = resolve_permalink_to_id(permalink=query, cfg=cfg)
+            record = get_site_record_by_id(record_id=record_id, cfg=cfg)
+            return enrich_custom_fields_with_names(record)
+        except WrikeError as e:
+            logger.error("Permalink lookup failed: %s", e)
+            return None
+
+    # Name / fuzzy search
+    logger.info("Searching for Site Record by name: %s", query)
+    all_records = _get_all_site_records(cfg=cfg)
+    matched = _match_site_with_llm(query=query, site_records=all_records)
+
+    if matched:
+        logger.info(
+            "Found matching Site Record: %s (%s)",
+            matched.get("title"),
+            matched.get("id"),
+        )
+        return enrich_custom_fields_with_names(matched)
+
+    logger.warning("No matching Site Record found for: %s", query)
+    return None
+
+
+def build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
+    """
+    Build a concise DD-relevant summary dict from a Wrike Site Record.
+
+    Returns a flat dict of the most important fields for the DD workflow.
+    """
+    title = record.get("title", "")
+    address = extract_address_from_record(record)
+    school_type = extract_school_type_from_record(record)
+    stage = extract_stage_from_record(record)
+    drive_folder_url = extract_google_folder_from_record(record)
+
+    return {
+        "id": record.get("id"),
+        "title": title,
+        "address": address,
+        "school_type": school_type,
+        "stage": stage,
+        "drive_folder_url": drive_folder_url,
+        "custom_fields": record.get("customFields", []),
+        "permalink": record.get("permalink"),
+        "description": record.get("description", ""),
+    }

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+uv.lock
+
+# Environment / secrets
+.env
+.gcp-saved-tokens.json
+credentials/client_secrets.json
+oauth_response.json
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace

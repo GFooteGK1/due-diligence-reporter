@@ -1,0 +1,468 @@
+{
+  "rating_logic": {
+    "current_e_occupancy": {
+      "score": 100,
+      "rating": "GREEN",
+      "criteria": "Current occupancy classification is E (Educational)",
+      "description": "Property is already permitted for educational use - no conversion needed"
+    },
+    "yellow": {
+      "score_range": "1-99",
+      "rating": "YELLOW",
+      "criteria": "Not E occupancy AND not Tier 1 Do Not Pursue",
+      "description": "Conversion possible with varying complexity - higher score = easier conversion",
+      "score_interpretation": {
+        "90-99": "Very easy conversions - minimal barriers",
+        "70-89": "Easy to moderate - standard conversions",
+        "50-69": "Moderate complexity - significant work required",
+        "30-49": "Complex - substantial barriers and timeline",
+        "15-29": "Very complex - extensive modifications needed",
+        "1-14": "Extremely difficult - edge cases only"
+      }
+    },
+    "red": {
+      "score": 0,
+      "rating": "RED",
+      "criteria": "Current use matches Do Not Pursue building type",
+      "description": "Environmental contamination or structural barriers make conversion impractical - do not pursue"
+    }
+  },
+  "scoring_factors": {
+    "description": "Numeric scores (1-99) based on weighted conversion complexity factors",
+    "weights": {
+      "building_type_complexity": "40% - Code path, typical barriers",
+      "systems_modifications": "30% - HVAC, plumbing, electrical, specialized systems",
+      "structural_requirements": "20% - Fire/life safety, egress, ADA compliance",
+      "size_and_scale": "10% - Square footage, stories, site complexity"
+    }
+  },
+  "tiers": {
+    "tier_1_do_not_pursue": {
+      "name": "Do Not Pursue",
+      "rating": "RED",
+      "score": 0,
+      "description": "Environmental contamination or fundamental structural barriers make conversion impractical",
+      "building_types": [
+        {
+          "use": "Gas stations / fueling facilities",
+          "barriers": [
+            "UST remediation",
+            "Soil contamination",
+            "Phase II environmental typically required"
+          ],
+          "keywords": ["gas station", "fuel", "petroleum", "chevron", "shell", "exxon", "bp", "7-eleven with gas"]
+        },
+        {
+          "use": "Dry cleaners",
+          "barriers": [
+            "PERC contamination",
+            "Environmental cleanup can take years"
+          ],
+          "keywords": ["dry clean", "laundry", "perc", "perchloroethylene"]
+        },
+        {
+          "use": "Auto body shops / paint facilities",
+          "barriers": [
+            "Hazmat",
+            "Ventilation contamination",
+            "Soil issues"
+          ],
+          "keywords": ["auto body", "collision repair", "paint shop", "body shop"]
+        },
+        {
+          "use": "Heavy manufacturing / industrial",
+          "barriers": [
+            "Structural issues",
+            "Hazmat history",
+            "Zoning conflicts"
+          ],
+          "keywords": ["manufacturing", "factory", "industrial", "fabrication", "assembly plant"]
+        },
+        {
+          "use": "Chemical storage / distribution",
+          "barriers": [
+            "Environmental remediation",
+            "Incompatible zoning"
+          ],
+          "keywords": ["chemical", "hazmat storage", "distribution center chemicals"]
+        },
+        {
+          "use": "Mortuaries / funeral homes",
+          "barriers": [
+            "Specialized plumbing",
+            "Formaldehyde contamination",
+            "Community perception"
+          ],
+          "keywords": ["mortuary", "funeral home", "crematorium", "funeral services"]
+        },
+        {
+          "use": "Adult entertainment venues",
+          "barriers": [
+            "CUP complications",
+            "Proximity restrictions",
+            "Community opposition"
+          ],
+          "keywords": ["adult entertainment", "strip club", "adult bookstore", "gentlemen's club"]
+        },
+        {
+          "use": "Correctional facilities",
+          "barriers": [
+            "Egress designed for containment",
+            "Extensive structural modifications"
+          ],
+          "keywords": ["jail", "prison", "correctional", "detention center"]
+        }
+      ]
+    },
+    "tier_2_complex": {
+      "name": "Complex Conversions (12+ months typical)",
+      "rating": "YELLOW",
+      "score_range": "15-49",
+      "description": "Significant barriers requiring extensive modifications and long timeline",
+      "building_types": [
+        {
+          "use": "Restaurants (moved from Tier 1)",
+          "score": 12,
+          "barriers": [
+            "Hood removal costly",
+            "Grease trap removal and remediation",
+            "Kitchen plumbing reconfiguration",
+            "Ventilation system overhaul"
+          ],
+          "keywords": ["restaurant", "cafe", "diner", "eatery", "bistro", "grill"]
+        },
+        {
+          "use": "Banks (moved from Tier 1)",
+          "score": 15,
+          "barriers": [
+            "Vault removal expensive and structural",
+            "Drive-through complicates circulation",
+            "Specialized security systems removal"
+          ],
+          "keywords": ["bank", "credit union", "financial institution", "vault"]
+        },
+        {
+          "use": "Hospitals / surgical centers (I-2)",
+          "score": 18,
+          "barriers": [
+            "Complex plumbing",
+            "Medical gas removal",
+            "Specialized HVAC decommissioning",
+            "Room configurations misaligned"
+          ],
+          "keywords": ["hospital", "surgical center", "medical center", "clinic surgical"]
+        },
+        {
+          "use": "Nursing homes / assisted living (I-1, I-2)",
+          "score": 18,
+          "barriers": [
+            "Similar to hospitals",
+            "Room configurations don't align with classroom needs",
+            "Accessibility features may need updates"
+          ],
+          "keywords": ["nursing home", "assisted living", "senior care", "memory care"]
+        },
+        {
+          "use": "High-rise buildings (7+ stories)",
+          "score": 20,
+          "barriers": [
+            "E occupancy above 3rd floor triggers significant fire/life safety upgrades",
+            "Extensive sprinkler modifications",
+            "Vertical egress complexity"
+          ],
+          "keywords": ["high-rise", "7+ stories", "tower", "skyscraper"]
+        },
+        {
+          "use": "Mall anchor stores / big box retail (100k+ SF)",
+          "score": 22,
+          "barriers": [
+            "Fire area subdivision",
+            "Sprinkler redesign",
+            "Egress complexity",
+            "Scale of modifications"
+          ],
+          "keywords": ["mall anchor", "big box", "department store", "walmart", "target", "home depot", "100000 sf"]
+        },
+        {
+          "use": "Data centers",
+          "score": 25,
+          "barriers": [
+            "Raised floor removal",
+            "Electrical reconfiguration",
+            "Often windowless - fenestration required",
+            "Cooling system repurposing"
+          ],
+          "keywords": ["data center", "server farm", "colocation facility"]
+        },
+        {
+          "use": "Large assembly venues — theaters, concert halls (A-1)",
+          "score": 28,
+          "barriers": [
+            "Fixed seating removal",
+            "Sloped floors",
+            "Egress reconfiguration",
+            "Acoustic treatments"
+          ],
+          "keywords": ["theater", "concert hall", "auditorium", "performing arts", "cinema", "movie theater"]
+        },
+        {
+          "use": "Cold storage / refrigerated warehouses",
+          "score": 28,
+          "barriers": [
+            "Insulation removal",
+            "Vapor barrier issues",
+            "Structural concerns",
+            "HVAC complete replacement"
+          ],
+          "keywords": ["cold storage", "refrigerated warehouse", "freezer storage"]
+        },
+        {
+          "use": "Historic / landmark designated buildings",
+          "score": 30,
+          "barriers": [
+            "SHPO review process adds timeline",
+            "Modification limitations",
+            "ADA conflicts with preservation requirements",
+            "Approval complexity"
+          ],
+          "keywords": ["historic", "landmark", "heritage building", "SHPO", "national register"]
+        },
+        {
+          "use": "Nightclubs / large bars (A-2)",
+          "score": 32,
+          "barriers": [
+            "Egress design issues",
+            "Often no natural light - fenestration needed",
+            "HVAC inadequate for daytime use",
+            "Acoustics and soundproofing"
+          ],
+          "keywords": ["nightclub", "bar", "lounge", "club", "tavern"]
+        },
+        {
+          "use": "Warehouses without HVAC or minimal fenestration",
+          "score": 35,
+          "barriers": [
+            "Mechanical system installation from scratch",
+            "Window additions required",
+            "Insulation installation",
+            "Interior finish-out"
+          ],
+          "keywords": ["warehouse", "distribution center", "storage facility", "industrial warehouse"]
+        },
+        {
+          "use": "Large churches / worship centers (A-3)",
+          "score": 38,
+          "barriers": [
+            "Sanctuary subdivision required",
+            "Egress modifications",
+            "Restroom counts often insufficient",
+            "Scale and volume challenges"
+          ],
+          "keywords": ["church", "cathedral", "temple", "mosque", "synagogue", "worship center", "megachurch"]
+        },
+        {
+          "use": "High-rise buildings (4-6 stories)",
+          "score": 42,
+          "barriers": [
+            "E occupancy above 3rd floor triggers fire/life safety upgrades",
+            "Sprinkler system modifications",
+            "Egress requirements"
+          ],
+          "keywords": ["4+ stories", "multi-story", "mid-rise"]
+        }
+      ]
+    },
+    "tier_3_moderate": {
+      "name": "Moderate Conversions",
+      "rating": "YELLOW",
+      "score_range": "50-69",
+      "description": "Moderate complexity with standard conversion challenges",
+      "building_types": [
+        {
+          "use": "Small assembly venues",
+          "score": 55,
+          "considerations": [
+            "Fixed seating may need removal",
+            "Egress modifications moderate",
+            "Restroom counts to verify"
+          ],
+          "keywords": ["small theater", "community theater", "small auditorium", "event space"]
+        },
+        {
+          "use": "Warehouses with HVAC and windows",
+          "score": 58,
+          "considerations": [
+            "HVAC already present",
+            "Windows provide natural light",
+            "Interior partition installation",
+            "Verify ceiling height and loading"
+          ],
+          "keywords": ["warehouse with hvac", "conditioned warehouse"]
+        }
+      ]
+    },
+    "tier_4_easy_to_moderate": {
+      "name": "Easy to Moderate Conversions",
+      "rating": "YELLOW",
+      "score_range": "70-89",
+      "description": "Well-understood conversion paths with manageable barriers",
+      "building_types": [
+        {
+          "use": "Medical office / clinics (B occupancy)",
+          "score": 75,
+          "considerations": [
+            "Lead-lined radiology rooms if present",
+            "Medical waste plumbing modifications",
+            "Specialized HVAC may need updates",
+            "Dental mercury amalgam if applicable"
+          ],
+          "keywords": ["medical office", "clinic", "doctor office", "dental office", "urgent care"]
+        },
+        {
+          "use": "Retail strip centers",
+          "score": 75,
+          "considerations": [
+            "Individual units often work well",
+            "Shared egress with neighbors to verify",
+            "Parking ratios usually adequate",
+            "ADA path of travel"
+          ],
+          "keywords": ["strip mall", "retail strip", "shopping center", "strip center"]
+        },
+        {
+          "use": "Small/mid-size churches (A-3)",
+          "score": 78,
+          "considerations": [
+            "Good candidates if sanctuary can be subdivided",
+            "Fixed pews on sloped floors to address",
+            "Baptistries typically not major issue",
+            "Restroom counts may need upgrades"
+          ],
+          "keywords": ["small church", "chapel", "community church"]
+        },
+        {
+          "use": "Office buildings (B occupancy) - general",
+          "score": 82,
+          "considerations": [
+            "B to E conversion well-understood",
+            "Open office needing partition walls",
+            "Restroom counts to verify",
+            "Watch for high-rise triggers"
+          ],
+          "keywords": ["office building", "office space", "professional office", "corporate office"]
+        },
+        {
+          "use": "Retail strip centers (individual units)",
+          "score": 85,
+          "considerations": [
+            "Individual units ideal size",
+            "Existing restrooms often present",
+            "Parking typically adequate",
+            "Simple floor plans"
+          ],
+          "keywords": ["retail unit", "strip mall unit", "small retail"]
+        },
+        {
+          "use": "Flex / light industrial with HVAC",
+          "score": 88,
+          "considerations": [
+            "Excellent if HVAC present",
+            "Adequate ceiling height typical",
+            "Restrooms usually present",
+            "Verify previous tenant uses for contamination"
+          ],
+          "keywords": ["flex space", "light industrial", "flex industrial", "warehouse office"]
+        }
+      ]
+    },
+    "tier_5_very_easy": {
+      "name": "Very Easy Conversions",
+      "rating": "YELLOW",
+      "score_range": "90-99",
+      "description": "Minimal barriers with straightforward conversion paths",
+      "building_types": [
+        {
+          "use": "Fitness centers / gyms",
+          "score": 90,
+          "considerations": [
+            "Open floor plans work well",
+            "Shower/locker plumbing can be repurposed",
+            "Large open spaces easily subdivided",
+            "Parking typically adequate"
+          ],
+          "keywords": ["gym", "fitness center", "health club", "yoga studio", "crossfit"]
+        },
+        {
+          "use": "Office buildings (B occupancy) - 1-3 stories",
+          "score": 92,
+          "considerations": [
+            "Ideal conversion candidate",
+            "B to E very well-understood",
+            "No high-rise triggers",
+            "Standard systems and layouts"
+          ],
+          "keywords": ["1 story office", "2 story office", "3 story office", "low-rise office"]
+        },
+        {
+          "use": "Daycare centers (E occupancy already)",
+          "score": 95,
+          "considerations": [
+            "Already E occupancy - best case",
+            "Code path is clean",
+            "May be sized wrong for K-12 but excellent for Pre-K",
+            "Minimal modifications needed"
+          ],
+          "keywords": ["daycare", "childcare", "preschool", "pre-k", "child development"]
+        }
+      ]
+    }
+  },
+  "occupancy_classifications": {
+    "E": {
+      "score": 100,
+      "description": "Educational",
+      "typical_uses": ["Schools K-12", "Daycare (>5 children)", "Pre-K"],
+      "note": "Current E occupancy = Score 100 (GREEN - no conversion needed)"
+    },
+    "B": {
+      "description": "Business",
+      "typical_uses": ["Offices", "Medical offices", "Retail stores"],
+      "conversion_note": "B to E is well-understood conversion path"
+    },
+    "A-1": {
+      "description": "Assembly - Fixed Seating",
+      "typical_uses": ["Theaters", "Concert halls", "Auditoriums"],
+      "conversion_note": "Fixed seating and sloped floors create barriers"
+    },
+    "A-2": {
+      "description": "Assembly - Food/Drink",
+      "typical_uses": ["Restaurants", "Bars", "Nightclubs"],
+      "conversion_note": "Hood/grease systems and egress issues"
+    },
+    "A-3": {
+      "description": "Assembly - Worship/Recreation",
+      "typical_uses": ["Churches", "Gyms", "Museums", "Libraries"],
+      "conversion_note": "Varies widely - small churches and gyms often good candidates"
+    },
+    "I-1": {
+      "description": "Institutional - Assisted",
+      "typical_uses": ["Assisted living", "Group homes"],
+      "conversion_note": "Room layouts typically don't align with classroom needs"
+    },
+    "I-2": {
+      "description": "Institutional - Medical",
+      "typical_uses": ["Hospitals", "Nursing homes"],
+      "conversion_note": "Complex systems and layouts create significant barriers"
+    },
+    "S-1": {
+      "description": "Storage - Moderate Hazard",
+      "typical_uses": ["Warehouses", "Storage"],
+      "conversion_note": "HVAC and fenestration critical factors"
+    },
+    "F-1": {
+      "description": "Factory - Moderate Hazard",
+      "typical_uses": ["Manufacturing", "Assembly"],
+      "conversion_note": "Check for contamination history and zoning"
+    }
+  }
+}
