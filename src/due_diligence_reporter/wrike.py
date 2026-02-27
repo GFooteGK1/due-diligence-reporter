@@ -318,7 +318,7 @@ def _get_all_site_records(*, cfg: WrikeConfig) -> list[dict[str, Any]]:
         resp = requests.get(
             url,
             headers=_wrike_headers(cfg.access_token),
-            params={"fields": '["customItemTypeId","customFields"]'},
+            params={"fields": '["customItemTypeId"]'},
             timeout=WRIKE_TIMEOUT_SECONDS,
         )
         _raise_for_wrike_error(resp)
