@@ -80,7 +80,7 @@ def flatten_report_data_for_replacement(
             nested = flatten_report_data_for_replacement(value, prefix=full_key)
             result.update(nested)
         elif isinstance(value, list):
-            result[full_key] = ", ".join(str(item) for item in value)
+            result[full_key] = "\n".join(str(item) for item in value)
         elif value is None:
             result[full_key] = ""
         else:

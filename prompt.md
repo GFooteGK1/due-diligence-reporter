@@ -116,6 +116,13 @@ Start with base building type score, then deduct:
 - `e_occupancy_timeline`: estimated conversion timeline string
 - `e_occupancy_confidence`: HIGH / MEDIUM / LOW
 
+**Schema mapping — populate these report_data fields after applying this skill:**
+- `q2.e_occupancy_score` → numeric score (0–100)
+- `q2.e_occupancy_zone` → GREEN / YELLOW / RED
+- `q2.e_occupancy_tier` → Tier 1–5
+- `q2.e_occupancy_timeline` → e.g., "8–14 weeks"
+- `q2.e_occupancy_confidence` → HIGH / MEDIUM / LOW
+
 ---
 
 ### Skill 2: State School Registration
@@ -193,6 +200,13 @@ If state cannot be determined or is not in the table: use score 70, zone YELLOW,
 - `school_approval_timeline_days`: integer (days pre-opening)
 - `steps_to_allow_operation`: brief numbered list of required steps
 
+**Schema mapping — populate these report_data fields after applying this skill:**
+- `q1.state_school_registration` → 1–2 sentence plain-English summary
+- `q1.school_approval_type` → NONE / REGISTRATION_SIMPLE / CERTIFICATE_OR_APPROVAL_REQUIRED / LICENSE_REQUIRED / LOCAL_APPROVAL_REQUIRED / COMPLEX_OR_OVERSIGHT
+- `q1.school_approval_gating` → true / false
+- `q1.school_approval_timeline_days` → integer days
+- `q1.steps_to_allow_operation` → newline-separated numbered steps (e.g., "1. Register with state\n2. Get health permit")
+
 ---
 
 ## Document Recognition Guide
@@ -236,20 +250,27 @@ If multiple files match a category, read the most recently modified one.
 - Extract all cost line items: structural, MEP, sprinkler, fire alarm, ADA, bathrooms, finish work, FF&E, contingency
 - If no cost estimate document exists, set all cost fields to [TBD]
 
+**ISP-DEPENDENT FIELDS:** If no ISP exists in the site's Drive folder:
+- All Q3 cost fields → `"[Pending ISP]"`
+- Q2 floorplan fields (`template_match`, `total_sf`, `classroom_count`, `common_areas`, `ada_compliance`, `egress`) → `"[Pending ISP]"`
+- Do NOT leave these blank or omit them from report_data.
+
 ### Q4 — Timeline
 - **Primary source:** SIR (for permit timeline), Pre-App Notes
 - Extract: permit timeline weeks, sequential vs concurrent permits, schedule risks
-- Calculate milestone dates using these formulas:
-  - **Acquire Property** = report date + 14 days
-  - **Construction Locked** = Obtain Permits date + 1 day
-  - **Ready to Open** = CO date + 21 days
-  - CO date = Obtain Permits date + construction timeline (from ISP scope of work)
-- Determine opening target semester (Fall or Spring) based on Ready to Open date
+- Calculate milestone dates using the Milestone Date Formulas section below
+- CO date and Ready to Open date are always "N/A - Pending Schedule Lock" in preliminary reports
+- Determine opening target semester based on `education_regulatory_date` (see formulas section)
+- Populate all six `q4.*_confidence` fields
 
 ### Executive Summary
 - Write after all four sections are complete
 - Each section summary (q1_summary through q4_summary) is 1–2 sentences
 - acquisition_conditions: list the critical blockers or watchouts (2–4 bullet points)
+
+**IMPORTANT:** The executive summary must be populated in `report_data` BEFORE calling `create_dd_report`. Do NOT write it only in chat. Include all 5 fields under `exec_summary`:
+- `exec_summary.q1_summary`, `q2_summary`, `q3_summary`, `q4_summary` → 1–2 sentences each
+- `exec_summary.acquisition_conditions` → 2–4 bullet points as a newline-separated string (e.g., `"• CUP required\n• State registration is gating"`)
 
 ### Appendix
 - Link each source document to its appendix field using the webViewLink from `list_drive_documents`
@@ -261,15 +282,30 @@ If multiple files match a category, read the most recently modified one.
 Use the report generation date (today's date) as the base.
 
 ```
-acquire_property_date    = today + 14 days
-obtain_permits_date      = from SIR permit timeline (or ask user if missing)
-construction_locked_date = obtain_permits_date + 1 day
-co_date                  = obtain_permits_date + construction_timeline_days
-ready_to_open_date       = co_date + 21 days
-education_regulatory_date = from school registration research (or school_approval_timeline_days from today)
+Milestone                    Date Formula                                          Confidence
+────────────────────────────────────────────────────────────────────────────────────────────
+acquire_property_date        today + 14 days                                       MEDIUM
+obtain_permits_date          from SIR permit timeline section                      HIGH (if in SIR) / LOW (if estimated)
+construction_locked_date     obtain_permits_date + 1 day                           MEDIUM
+education_regulatory_date    today + school_approval_timeline_days (from skill)    HIGH
+co_date                      "N/A - Pending Schedule Lock"                         N/A
+ready_to_open_date           "N/A - Pending Schedule Lock"                         N/A
 ```
 
-Format all dates as MM/DD/YYYY.
+**Populate confidence fields** in report_data:
+- `q4.acquire_property_confidence` → MEDIUM
+- `q4.obtain_permits_confidence` → HIGH if sourced from SIR, LOW if estimated
+- `q4.construction_locked_confidence` → MEDIUM
+- `q4.education_regulatory_confidence` → HIGH (derived from school approval skill)
+- `q4.co_confidence` → N/A
+- `q4.ready_to_open_confidence` → N/A
+
+**Opening Target Semester** — based on `education_regulatory_date`:
+- Before August 1 of that year → `"Fall [YEAR] (August 1, [YEAR])"`
+- Before January 15 of next year → `"Spring [YEAR] (January 15, [YEAR])"`
+- Otherwise → next August 1: `"Fall [YEAR+1] (August 1, [YEAR+1])"`
+
+Format all milestone dates as MM/DD/YYYY (or "N/A - Pending Schedule Lock" as applicable).
 
 ---
 
@@ -306,7 +342,7 @@ Using the current use extracted from the documents (or Wrike record), apply the 
 Using the state from the site address, apply the School Approval Skill directly. Look up the state in the table above and populate all school approval fields.
 
 ### Step 6 — Calculate Milestone Dates
-Apply the date formulas above using today's date as the base. Mark any dates that require data not yet available as [TBD].
+Apply the date formulas above using today's date as the base. Set CO date and Ready to Open to "N/A - Pending Schedule Lock" (preliminary report). Populate all six `q4.*_confidence` fields. Mark any dates that require data not yet available as [TBD].
 
 ### Step 7 — Resolve Missing Required Fields
 Before calling `create_dd_report`, identify any required fields still missing:
@@ -427,11 +463,17 @@ Pass this structure to `create_dd_report`:
   },
   "q4": {
     "acquire_property_date": "",
+    "acquire_property_confidence": "",
     "obtain_permits_date": "",
+    "obtain_permits_confidence": "",
     "construction_locked_date": "",
+    "construction_locked_confidence": "",
     "education_regulatory_date": "",
+    "education_regulatory_confidence": "",
     "co_date": "",
+    "co_confidence": "",
     "ready_to_open_date": "",
+    "ready_to_open_confidence": "",
     "permit_timeline_weeks": "",
     "sequential_or_concurrent": "",
     "pre_app_required": "",
@@ -462,8 +504,15 @@ Pass this structure to `create_dd_report`:
 - Never invent data. If a field cannot be extracted, write [TBD].
 - Summarise extracted content — do not dump raw text into report fields.
 - Keep section summaries to 1–2 sentences. Keep field values to a single line where possible.
-- Scope of work: list as a semicolon-separated string of 3–5 items.
-- Key cost risks and schedule risks: list as a semicolon-separated string.
+
+**LIST FORMATTING:** Any field with multiple steps, items, or bullets must be a newline-separated STRING (not a Python list), so each item stacks on its own line in the Google Doc.
+- Correct: `"1. Register with state\n2. Get health permit\n3. Pass inspection"`
+- Incorrect: `["1. Register with state", "2. Get health permit"]`
+
+Applies to: `steps_to_allow_operation`, `scope_of_work`, `schedule_risks`, `key_cost_risks`, `acquisition_conditions`, `permits_required`.
+
+- Scope of work: 3–5 items, one per line (newline-separated string).
+- Key cost risks and schedule risks: one item per line (newline-separated string).
 
 ---
 
