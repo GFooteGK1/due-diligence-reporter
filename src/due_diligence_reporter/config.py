@@ -48,6 +48,16 @@ class Settings(BaseSettings):
         description="Parent Drive folder ID that contains all site folders",
     )
 
+    # Building Optimizer / Pricing API
+    pricing_api_url: str = Field(
+        "https://pricing-api-738625530258.us-central1.run.app",
+        description="Base URL for the Building Optimizer pricing API",
+    )
+    pricing_api_key: str = Field(
+        "",
+        description="API key for the Building Optimizer pricing API (X-API-Key header)",
+    )
+
     # Logging
     log_level: str = Field("INFO", description="Logging level")
 

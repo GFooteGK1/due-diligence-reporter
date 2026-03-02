@@ -6,6 +6,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
+import requests
+
 from dotenv import load_dotenv
 from mcp.server import FastMCP
 
@@ -302,6 +304,136 @@ def _school_zone(score: int) -> str:
     if score >= 41:
         return "YELLOW"
     return "RED"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COST ESTIMATE — Building Optimizer API + per-SF code-required item estimates
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Components that map to each DD report cost category
+_FINISH_WORK_COMPONENTS = {"floors", "walls", "ceiling"}
+_MEP_COMPONENTS = {"hvac", "lighting"}   # electrical (lighting) + mechanical; plumbing → bathrooms
+_FFE_COMPONENTS = {"tech", "millwork", "security"}
+_BATHROOM_COMPONENTS = {"plumbing", "fixtures"}  # restroom rooms only
+
+# Per-SF cost ranges for items not in the Optimizer (code-required work)
+_PER_SF_RANGES: dict[str, tuple[float, float]] = {
+    "structural": (8.0, 25.0),    # foundation/structural remediation
+    "sprinkler": (3.0, 7.0),      # fire suppression installation
+    "fire_alarm": (2.0, 4.0),     # fire alarm system
+    "ada": (2.0, 8.0),            # ADA / accessibility upgrades
+}
+
+# Region key aliases — map common city/state names to API region keys
+_REGION_ALIASES: dict[str, str] = {
+    "austin": "austin",
+    "texas": "austin",
+    "tx": "austin",
+    "miami": "miami",
+    "florida": "miami",
+    "fl": "miami",
+    "georgia": "miami",
+    "ga": "miami",
+    "san francisco": "sanfrancisco",
+    "california": "sanfrancisco",
+    "ca": "sanfrancisco",
+    "bay area": "sanfrancisco",
+    "los angeles": "sanfrancisco",
+    "la": "sanfrancisco",
+}
+
+
+def _resolve_region(region_hint: str) -> str:
+    """Map a city/state name to an API region key."""
+    return _REGION_ALIASES.get(region_hint.lower().strip(), "default")
+
+
+def _build_rooms_payload(
+    rooms: list[dict[str, Any]],
+    finish_level: int,
+) -> list[dict[str, Any]]:
+    """Build a rooms list for the API with all components set to finish_level."""
+    component_keys_by_type: dict[str, list[str]] = {
+        "learningroom":  ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
+        "hallway":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"],
+        "office":        ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
+        "conferenceroom":["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
+        "breakroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "millwork"],
+        "restroom":      ["floors", "walls", "ceiling", "lighting", "plumbing", "fixtures"],
+        "limitlessroom": ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
+        "rocketroom":    ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
+        "multipurpose":  ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "security"],
+        "reception":     ["floors", "walls", "ceiling", "lighting", "hvac", "millwork", "security"],
+        "storage":       ["floors", "walls", "ceiling", "lighting"],
+        "lobby":         ["floors", "walls", "ceiling", "lighting", "hvac", "security"],
+        "otherroom":     ["floors", "walls", "ceiling", "lighting", "hvac"],
+        "workshop":      ["floors", "walls", "ceiling", "lighting", "hvac"],
+    }
+    result = []
+    for room in rooms:
+        room_type = room.get("type", "otherroom")
+        keys = component_keys_by_type.get(room_type, ["floors", "walls", "ceiling", "lighting"])
+        result.append({
+            "type": room_type,
+            "sqft": room.get("sqft", 400),
+            "levels": {k: finish_level for k in keys},
+        })
+    return result
+
+
+def _sum_components(api_rooms: list[dict[str, Any]], component_keys: set[str]) -> float:
+    """Sum component subtotals across all rooms for the given component keys."""
+    total = 0.0
+    for room in api_rooms:
+        for comp in room.get("components", []):
+            if comp.get("key") in component_keys:
+                total += comp.get("subtotal", 0.0)
+    return total
+
+
+def _sum_bathroom_components(api_rooms: list[dict[str, Any]]) -> float:
+    """Sum plumbing + fixtures only for restroom-type rooms."""
+    total = 0.0
+    for room in api_rooms:
+        if room.get("type") == "restroom":
+            for comp in room.get("components", []):
+                if comp.get("key") in _BATHROOM_COMPONENTS:
+                    total += comp.get("subtotal", 0.0)
+    return total
+
+
+def _auto_generate_rooms(total_sf: int, classroom_count: int) -> list[dict[str, Any]]:
+    """Generate a default room mix when no ISP room list is available."""
+    classrooms = max(1, classroom_count) if classroom_count > 0 else max(1, total_sf // 900)
+    restroom_count = max(2, classrooms // 5)
+    hallway_sf = max(200, int(total_sf * 0.15))
+    multipurpose_sf = max(400, int(total_sf * 0.05))
+    rooms: list[dict[str, Any]] = []
+    for _ in range(classrooms):
+        rooms.append({"type": "learningroom", "sqft": 450})
+    for _ in range(restroom_count):
+        rooms.append({"type": "restroom", "sqft": 150})
+    rooms.append({"type": "hallway", "sqft": hallway_sf})
+    rooms.append({"type": "lobby", "sqft": 400})
+    rooms.append({"type": "multipurpose", "sqft": multipurpose_sf})
+    return rooms
+
+
+def _call_pricing_api(
+    api_url: str,
+    api_key: str,
+    rooms_payload: list[dict[str, Any]],
+    region: str,
+) -> dict[str, Any]:
+    """POST to the Building Optimizer /v1/estimate endpoint."""
+    resp = requests.post(
+        f"{api_url}/v1/estimate",
+        headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+        json={"rooms": rooms_payload, "region": region, "fees": {}},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()  # type: ignore[no-any-return]
 
 
 def _make_google_client() -> GoogleClient:
@@ -790,6 +922,181 @@ async def apply_school_approval_skill(
             f"School approval for {state_upper}: {zone} (score {score}/100), "
             f"{approval_type}, {timeline_days}-day timeline."
         ),
+    }
+
+
+@mcp.tool()
+async def get_cost_estimate(
+    total_building_sf: int,
+    region: str = "default",
+    rooms: list[dict[str, Any]] | None = None,
+    classroom_count: int = 0,
+) -> dict[str, Any]:
+    """Estimate renovation costs for a school conversion using the Building Optimizer.
+
+    Calls the Building Optimizer pricing API at two finish levels (Refresh = low,
+    Alpha = high) to produce low/high cost ranges. Adds per-SF estimates for
+    code-required items not in the API (structural, sprinkler, fire alarm, ADA).
+
+    Call this tool in Step 3 after reading source documents (or after apply_e_occupancy_skill
+    confirms the site is worth pursuing). Copy all values from report_data_fields into
+    report_data before calling create_dd_report.
+
+    Args:
+        total_building_sf: Gross building area in square feet (from Wrike or documents).
+        region: Location hint for regional cost multiplier. Accepts city or state name
+            (e.g., "Austin", "TX", "Florida", "California") or API keys
+            ("austin", "miami", "sanfrancisco", "default"). Defaults to "default"
+            (national average) when unknown.
+        rooms: Optional list of rooms from ISP output. Each item: {"type": str, "sqft": int}.
+            Valid types: learningroom, hallway, office, conferenceroom, breakroom, restroom,
+            limitlessroom, rocketroom, multipurpose, reception, storage, lobby, otherroom,
+            workshop. If omitted, a default school layout is generated from classroom_count
+            and total_building_sf.
+        classroom_count: Number of classrooms (used only when rooms is not provided).
+
+    Returns:
+        Dict with low/high cost ranges for all Q3 cost categories and ready-to-use
+        report_data_fields for all q3.* fields.
+    """
+    logger.info(
+        "Tool called: get_cost_estimate — total_sf=%d, region=%s, rooms_provided=%s",
+        total_building_sf,
+        region,
+        rooms is not None,
+    )
+
+    if total_building_sf <= 0:
+        return {
+            "status": "error",
+            "error": "Invalid parameter",
+            "message": "total_building_sf must be a positive integer",
+        }
+
+    settings = get_settings()
+    api_key = settings.pricing_api_key
+    api_url = settings.pricing_api_url
+
+    if not api_key:
+        return {
+            "status": "error",
+            "error": "Missing configuration",
+            "message": "PRICING_API_KEY is not configured.",
+        }
+
+    resolved_region = _resolve_region(region)
+    room_list = rooms if rooms else _auto_generate_rooms(total_building_sf, classroom_count)
+    rooms_note = "ISP room list" if rooms else f"auto-generated ({len(room_list)} rooms from {classroom_count or 'inferred'} classrooms)"
+
+    logger.info("Using %s, region=%s, %d rooms", rooms_note, resolved_region, len(room_list))
+
+    try:
+        # Call API at level 1 (Refresh) for LOW estimates
+        low_payload = _build_rooms_payload(room_list, finish_level=1)
+        low_resp = _call_pricing_api(api_url, api_key, low_payload, resolved_region)
+        low_rooms = low_resp["data"]["rooms"]
+
+        # Call API at level 3 (Alpha) for HIGH estimates
+        high_payload = _build_rooms_payload(room_list, finish_level=3)
+        high_resp = _call_pricing_api(api_url, api_key, high_payload, resolved_region)
+        high_rooms = high_resp["data"]["rooms"]
+
+    except requests.HTTPError as e:
+        logger.error("Pricing API HTTP error: %s", e)
+        return {"status": "error", "error": "Pricing API error", "message": str(e)}
+    except Exception as e:
+        logger.error("Pricing API call failed: %s", e)
+        return {"status": "error", "error": "Pricing API error", "message": str(e)}
+
+    # Map API component sums to DD report cost categories
+    finish_low  = _sum_components(low_rooms,  _FINISH_WORK_COMPONENTS)
+    finish_high = _sum_components(high_rooms, _FINISH_WORK_COMPONENTS)
+    mep_low     = _sum_components(low_rooms,  _MEP_COMPONENTS)
+    mep_high    = _sum_components(high_rooms, _MEP_COMPONENTS)
+    ffe_low     = _sum_components(low_rooms,  _FFE_COMPONENTS)
+    ffe_high    = _sum_components(high_rooms, _FFE_COMPONENTS)
+    bath_low    = _sum_bathroom_components(low_rooms)
+    bath_high   = _sum_bathroom_components(high_rooms)
+
+    # Per-SF estimates for code-required items not in the Optimizer
+    sf = total_building_sf
+    struct_low,    struct_high    = sf * _PER_SF_RANGES["structural"][0],  sf * _PER_SF_RANGES["structural"][1]
+    sprinkler_low, sprinkler_high = sf * _PER_SF_RANGES["sprinkler"][0],   sf * _PER_SF_RANGES["sprinkler"][1]
+    fa_low,        fa_high        = sf * _PER_SF_RANGES["fire_alarm"][0],  sf * _PER_SF_RANGES["fire_alarm"][1]
+    ada_low,       ada_high       = sf * _PER_SF_RANGES["ada"][0],         sf * _PER_SF_RANGES["ada"][1]
+
+    # Subtotals (before contingency)
+    sub_low  = finish_low  + mep_low  + ffe_low  + bath_low  + struct_low  + sprinkler_low  + fa_low  + ada_low
+    sub_high = finish_high + mep_high + ffe_high + bath_high + struct_high + sprinkler_high + fa_high + ada_high
+
+    cont_low  = sub_low  * 0.15
+    cont_high = sub_high * 0.20
+
+    total_low  = sub_low  + cont_low
+    total_high = sub_high + cont_high
+
+    def fmt(n: float) -> str:
+        return f"{round(n):,}"
+
+    report_fields: dict[str, str] = {
+        "q3.structural_low":    fmt(struct_low),
+        "q3.structural_high":   fmt(struct_high),
+        "q3.mep_low":           fmt(mep_low),
+        "q3.mep_high":          fmt(mep_high),
+        "q3.sprinkler_low":     fmt(sprinkler_low),
+        "q3.sprinkler_high":    fmt(sprinkler_high),
+        "q3.fire_alarm_low":    fmt(fa_low),
+        "q3.fire_alarm_high":   fmt(fa_high),
+        "q3.ada_low":           fmt(ada_low),
+        "q3.ada_high":          fmt(ada_high),
+        "q3.bathrooms_low":     fmt(bath_low),
+        "q3.bathrooms_high":    fmt(bath_high),
+        "q3.finish_work_low":   fmt(finish_low),
+        "q3.finish_work_high":  fmt(finish_high),
+        "q3.ffe_low":           fmt(ffe_low),
+        "q3.ffe_high":          fmt(ffe_high),
+        "q3.contingency_low":   fmt(cont_low),
+        "q3.contingency_high":  fmt(cont_high),
+        "q3.total_low":         fmt(total_low),
+        "q3.total_high":        fmt(total_high),
+        "q3.calculated_budget": f"${fmt(total_low)} – ${fmt(total_high)}",
+        "q3.budget_formula":    (
+            "Building Optimizer (finish, MEP, FF&E, bathrooms) + "
+            f"per-SF estimates (structural ${_PER_SF_RANGES['structural'][0]:.0f}–${_PER_SF_RANGES['structural'][1]:.0f}/SF, "
+            f"sprinkler ${_PER_SF_RANGES['sprinkler'][0]:.0f}–${_PER_SF_RANGES['sprinkler'][1]:.0f}/SF, "
+            f"fire alarm ${_PER_SF_RANGES['fire_alarm'][0]:.0f}–${_PER_SF_RANGES['fire_alarm'][1]:.0f}/SF, "
+            f"ADA ${_PER_SF_RANGES['ada'][0]:.0f}–${_PER_SF_RANGES['ada'][1]:.0f}/SF) + 15–20% contingency"
+        ),
+        "q3.budget_status":     "[Review against acquisition budget]",
+        "q3.key_cost_risks":    (
+            "Structural condition unknown pending field inspection\n"
+            "Sprinkler installation required if system not present\n"
+            "Fire alarm upgrade required for E-occupancy code compliance\n"
+            "ADA scope may increase significantly depending on inspection findings\n"
+            "Finish cost range reflects Refresh vs. Alpha standard"
+        ),
+    }
+
+    return {
+        "status": "success",
+        "region": resolved_region,
+        "total_sf": total_building_sf,
+        "rooms_used": rooms_note,
+        "room_count": len(room_list),
+        "cost_summary": {
+            "finish_work":   f"${fmt(finish_low)} – ${fmt(finish_high)}",
+            "mep":           f"${fmt(mep_low)} – ${fmt(mep_high)}",
+            "ffe":           f"${fmt(ffe_low)} – ${fmt(ffe_high)}",
+            "bathrooms":     f"${fmt(bath_low)} – ${fmt(bath_high)}",
+            "structural":    f"${fmt(struct_low)} – ${fmt(struct_high)}",
+            "sprinkler":     f"${fmt(sprinkler_low)} – ${fmt(sprinkler_high)}",
+            "fire_alarm":    f"${fmt(fa_low)} – ${fmt(fa_high)}",
+            "ada":           f"${fmt(ada_low)} – ${fmt(ada_high)}",
+            "contingency":   f"${fmt(cont_low)} – ${fmt(cont_high)}",
+            "grand_total":   f"${fmt(total_low)} – ${fmt(total_high)}",
+        },
+        "report_data_fields": report_fields,
+        "message": f"Cost estimate: ${fmt(total_low)} – ${fmt(total_high)} ({resolved_region} region, {len(room_list)} rooms, {total_building_sf:,} SF)",
     }
 
 
