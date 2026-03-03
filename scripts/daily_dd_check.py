@@ -138,7 +138,7 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_cost_estimate",
-        "description": "Estimate renovation costs using the Building Optimizer API.",
+        "description": "Estimate renovation costs using the Building Optimizer API. Returns report_data_fields with all q3.* template tokens — copy these directly into report_data as flat keys (e.g. report_data['q3.structural_low']). Do NOT nest under q3.cost_estimate_table.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -161,7 +161,7 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "create_dd_report",
-        "description": "Create a completed DD report Google Doc.",
+        "description": "Create a completed DD report Google Doc. The report_data dict must use exact template token keys (e.g. 'q1.zoning_designation', 'q3.structural_low'). Copy report_data_fields from skill tools directly into report_data. See prompt.md 'Report Data Schema' for the full token list.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -417,7 +417,7 @@ def _run_dd_report_agent(site_title: str, system_prompt: str) -> dict[str, Any]:
 # Main loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main(site_filter: str | None = None) -> None:
     settings = get_settings()
     wrike_cfg = load_wrike_config()
 
@@ -452,6 +452,10 @@ def main() -> None:
 
     for record in all_records:
         site_title = record.get("title", "Unknown")
+
+        if site_filter and site_filter.lower() not in site_title.lower():
+            continue
+
         drive_folder_url = extract_google_folder_from_record(record)
 
         if not drive_folder_url:
@@ -641,4 +645,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Daily DD readiness check and report generation")
+    parser.add_argument("--site", type=str, default=None, help="Run for a single site (substring match on title)")
+    args = parser.parse_args()
+    main(site_filter=args.site)

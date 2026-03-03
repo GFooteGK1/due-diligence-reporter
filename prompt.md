@@ -178,6 +178,123 @@ When I find a file with `doc_type == "sir"`, I read it and extract:
 
 ---
 
+## Building Inspection Data Extraction
+
+The building inspection is a **Facility Condition Assessment Summary** (Pre-Lease Building Assessment Report) prepared by the Alpha School inspection team. It evaluates E-Occupancy conversion feasibility across standardized sections. When I find a file with `doc_type == "building_inspection"`, I read it and extract the following:
+
+### 1. Overall conversion risk → `q2.building_condition_summary`, `q3.key_cost_risks`
+
+The report states an **Overall Feasibility Assessment / Conversion Risk Level** (e.g., "HIGH", "MODERATE", "LOW"). This is the single most important finding and should appear prominently in the Q2 scope of work summary and Q3 cost risks.
+
+### 2. Structural assessment → `q2.structural_condition`
+
+- Foundation condition (good / fair / poor; cracking, settling, water damage)
+- Roof condition (good / not inspected / leaks noted)
+- Floor condition (level / settlement)
+- Ceiling condition (finished drop ceiling vs. exposed MEP requiring new ceiling)
+- Mold or water damage evidence
+
+### 3. HVAC & Mechanical → `q2.mep_condition`
+
+- System type and tonnage (e.g., "Central split-system, 2x 4-ton R-410A" or "United CoolAir ~5-ton")
+- Condition and age (good / poor / replacement recommended)
+- Thermostat count and zone coverage
+- Ductwork condition
+- Fresh air intake presence
+- Whether the system serves only the tenant space or is whole-building shared (cost risk)
+
+### 4. Electrical → `q2.mep_condition`
+
+- Panel type, voltage, amperage (e.g., "GE Powermark 208Y/120V 3-phase 200A" or "200A 120/240V single-phase")
+- Panel condition and location
+- Available breaker capacity
+- GFCI protection present in wet areas (yes / no — code violation if missing)
+- Outlet count and adequacy for classroom use
+- Lighting type and adequacy for classroom standards
+- Internet/data infrastructure presence
+
+### 5. Sprinkler system → `q2.hazard_flags`, `q3.key_cost_risks`
+
+- **Sprinklered: Yes / No** — this is a binary finding with major cost impact
+- If yes: coverage completeness, component condition, FDC location, certification status
+- If no: sprinkler installation required — flag as cost risk (per-SF range: $3–7/SF)
+
+### 6. Fire alarm system → `q2.hazard_flags`, `q3.key_cost_risks`
+
+- System type (conventional / addressable) and estimated age
+- Device counts (pull stations, smoke detectors, strobes/horns)
+- Monitoring status (active / unconfirmed / none)
+- E-occupancy compatibility confirmed or not
+- If aged (>15 years): modernization recommended — flag as cost risk
+
+### 7. Emergency & life safety → `q2.hazard_flags`
+
+- Emergency lighting (present / functional / non-functional units)
+- Fire extinguisher count, condition, inspection compliance
+- Carbon monoxide detectors (present / not present — critical if gas heating)
+- Fire-rated doors and walls (confirmed / not confirmed)
+- Fire dampers in duct penetrations (present / absent)
+- Kitchen-rated extinguisher (required if cooking area present)
+
+### 8. Entry & egress → `q2.hazard_flags`
+
+- Exit door count and widths
+- **Panic hardware** installed on required exit doors (yes / no — critical life-safety violation if missing)
+- Exit signage (illuminated / non-illuminated)
+- Travel distance to nearest exit
+- Dead-end corridors
+
+### 9. Restrooms & plumbing → `q2.hazard_flags`, `q3.key_cost_risks`
+
+- **Toilet fixture count** (critical for E-occupancy — insufficient count blocks occupancy)
+- ADA restroom compliance (dimensions, turning radius, sink clearance)
+- Fixture condition and child-appropriateness
+- Water heater location, capacity, shared vs. dedicated
+- Whether existing restrooms require demolition/reconstruction
+- Additional restroom construction needed (major cost item)
+
+### 10. ADA compliance → `q2.hazard_flags`
+
+The inspection includes a full ADA deficiency table. Extract:
+- Exterior access (ramp present / not present — critical if missing)
+- Door hardware (lever type / non-compliant)
+- Braille/tactile signage (installed / not installed)
+- Drinking fountain (compliant / not present / requires adjustment)
+- Countertop heights (compliant / non-compliant)
+- Path of travel (clear / obstructed)
+
+### 11. Parking & drop-off (if present)
+
+- Total parking spaces and ADA-accessible spaces
+- Drop-off stacking capacity
+- Emergency vehicle access
+
+### 12. Deficiency chart → `q2.scope_of_work_summary`, `q3.key_cost_risks`
+
+The report ends with a **Deficiency and Feasibility Chart** organized by severity:
+- **Critical / Occupancy-Blocking** — items that must be resolved before E-occupancy (e.g., no ADA ramp, insufficient restrooms, no panic hardware)
+- **Important / Capital** — significant cost items (e.g., HVAC replacement, whole-building electrical, ceiling system)
+- **Minor** — items that can be addressed during planned maintenance
+
+I should list all Critical deficiencies verbatim in `q3.key_cost_risks` and reference them in `q2.scope_of_work_summary`.
+
+### Cost impact guidance
+
+The per-SF cost ranges in `get_cost_estimate` (structural $8–25/SF, sprinkler $3–7/SF, fire alarm $2–4/SF, ADA $2–8/SF) represent generic ranges. Based on inspection findings, I note where the actual cost will likely fall:
+- Foundation in good condition, no structural deficiencies → structural costs at **low end** of range
+- No sprinkler system present → sprinkler installation required at **full range** ($3–7/SF)
+- Fire alarm >15 years old, modernization recommended → fire alarm at **mid-to-high** range
+- Extensive ADA deficiencies (ramp, restroom, hardware, signage) → ADA at **high end** of range
+- Restroom demolition + reconstruction + additional restrooms → note as **significant additional bathroom cost** beyond per-SF estimate
+
+### What the building inspection does NOT contain
+
+- **Room-by-room cost estimates** — costs come from the Building Optimizer API (`get_cost_estimate`), not the inspection
+- **Program fit or room assignments** — that comes from the ISP
+- **Zoning or permit information** — that comes from the SIR
+
+---
+
 ## Sourced Gap Label Scheme
 
 When I tried to populate a field but the data was not available, I use a sourced gap label that records **what was checked and what was missing**. Format:
@@ -213,6 +330,183 @@ Some sections of the DD Report are intentionally scaffolded with sourced gap lab
 - **Building inspection findings** — `[Not found — building inspection not yet available]`
 
 These labels are not errors. They are action items for the reviewer, and they tell `check_report_completeness` exactly what source was checked.
+
+---
+
+## Report Data Schema (create_dd_report)
+
+When you call `create_dd_report`, the `report_data` dict must use the **exact keys** listed below. These correspond 1-to-1 with `{{token}}` placeholders in the Google Doc template. Keys that don't match a template token are silently dropped.
+
+You may pass keys as either:
+- **Flat top-level keys**: `report_data["q1.zoning_designation"] = "C-2 Commercial"`
+- **Nested dicts**: `report_data["q1"]["zoning_designation"] = "C-2 Commercial"` (auto-flattened to dot notation)
+
+### meta — Report header fields
+
+| Token | Description | Source |
+|---|---|---|
+| `meta.site_name` | Full site name (e.g., "Alpha Keller") | Wrike record title |
+| `meta.city_state_zip` | City, State ZIP (e.g., "Keller, TX 76248") | Wrike address field |
+| `meta.school_type` | School type (e.g., "K-8 Microschool") | Wrike record or default |
+| `meta.marketing_name` | Marketing name if different from site name | Wrike record |
+| `meta.report_date` | Report date MM/DD/YYYY | Auto-populated |
+| `meta.prepared_by` | Author (e.g., "DD Report Agent") | Set to "DD Report Agent" |
+| `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
+
+### exec_summary — Executive summary (1-2 sentences each)
+
+| Token | Description | Source |
+|---|---|---|
+| `exec_summary.q1_summary` | One-sentence summary of Q1 findings (zoning, permits, school approval) | Synthesize from Q1 data |
+| `exec_summary.q2_summary` | One-sentence summary of Q2 findings (building condition, E-Occupancy, scope) | Synthesize from Q2 data |
+| `exec_summary.q3_summary` | One-sentence summary of Q3 findings (total budget range, key cost risks) | Synthesize from Q3 data |
+| `exec_summary.q4_summary` | One-sentence summary of Q4 findings (target open date, critical path) | Synthesize from Q4 data |
+| `exec_summary.acquisition_conditions` | Conditions or blockers for acquisition (e.g., "Zoning variance required") | Synthesize from all Qs |
+
+### q1 — Zoning, permits, school registration
+
+| Token | Description | Source |
+|---|---|---|
+| `q1.zoning_designation` | Current zoning (e.g., "C-2 Commercial") | SIR |
+| `q1.schools_permitted_as` | How schools are permitted under this zoning | SIR |
+| `q1.ahj_building_dept` | AHJ building department name and contact | SIR |
+| `q1.ahj_fire_dept` | AHJ fire department name and contact | SIR |
+| `q1.ibc_edition` | IBC edition enforced (e.g., "2021 IBC") | SIR |
+| `q1.health_dept_requirements` | Health department requirements for school use | SIR |
+| `q1.rating` | Overall Q1 rating (GREEN / YELLOW / RED) | Synthesize |
+| `q1.state_school_registration` | State registration summary | `apply_school_approval_skill` report_data_fields |
+| `q1.school_approval_type` | Approval type code | `apply_school_approval_skill` report_data_fields |
+| `q1.school_approval_gating` | Whether approval is gating (true/false) | `apply_school_approval_skill` report_data_fields |
+| `q1.school_approval_timeline_days` | Days to obtain approval | `apply_school_approval_skill` report_data_fields |
+| `q1.steps_to_allow_operation` | Step-by-step registration process | `apply_school_approval_skill` report_data_fields |
+
+### q2 — Building assessment, E-Occupancy, hazards
+
+| Token | Description | Source |
+|---|---|---|
+| `q2.year_built` | Year built | Building inspection or SIR |
+| `q2.construction_type` | Construction type (e.g., "Type V-B wood frame") | Building inspection |
+| `q2.stories` | Number of stories | Building inspection or Wrike |
+| `q2.gba_sf` | Gross building area in SF | Building inspection or Wrike |
+| `q2.total_sf` | Total leasable / usable SF | Building inspection or ISP |
+| `q2.current_use` | Current building use (e.g., "Medical office") | SIR or Wrike |
+| `q2.classroom_count` | Number of classrooms from ISP room assignments | ISP |
+| `q2.common_areas` | Common areas description | ISP or building inspection |
+| `q2.bathrooms` | Bathroom count and condition | Building inspection |
+| `q2.exits` | Exit count and description | Building inspection |
+| `q2.egress` | Egress path assessment | Building inspection |
+| `q2.corridor_width` | Corridor widths | Building inspection |
+| `q2.sprinklers` | Sprinkler system status (Yes/No + details) | Building inspection |
+| `q2.fire_alarm` | Fire alarm system type and condition | Building inspection |
+| `q2.ada_compliance` | ADA compliance assessment | Building inspection + ISP ADA check |
+| `q2.scope_of_work` | Scope of work summary (critical deficiencies + key items) | Building inspection deficiency chart |
+| `q2.template_match` | ISP Program Fit score and summary | ISP |
+| `q2.e_occupancy_score` | E-Occupancy score (0-100) | `apply_e_occupancy_skill` report_data_fields |
+| `q2.e_occupancy_zone` | E-Occupancy zone (GREEN/YELLOW/RED) | `apply_e_occupancy_skill` report_data_fields |
+| `q2.e_occupancy_tier` | E-Occupancy tier label | `apply_e_occupancy_skill` report_data_fields |
+| `q2.e_occupancy_timeline` | E-Occupancy conversion timeline | `apply_e_occupancy_skill` report_data_fields |
+| `q2.e_occupancy_confidence` | E-Occupancy confidence level | `apply_e_occupancy_skill` report_data_fields |
+| `q2.flood_zone` | FEMA flood zone designation | SIR or public records |
+| `q2.tornado_zone` | Tornado zone if applicable | SIR |
+| `q2.seismic_design_category` | Seismic design category if applicable | SIR |
+| `q2.storm_shelter` | Storm shelter requirement | SIR |
+| `q2.historic_district` | Historic district status | SIR |
+| `q2.environmental_contamination` | Environmental contamination findings | Phase I ESA or SIR |
+| `q2.asbestos_lead_risk` | Asbestos/lead paint risk assessment | Building inspection |
+| `q2.ust_database` | Underground storage tank database check | Phase I ESA |
+| `q2.as_built_links` | Links to as-built drawings if available | Drive folder |
+| `q2.lidar_summary` | Matterport/LiDAR scan summary | Matterport file |
+
+### q3 — Cost estimate
+
+> **IMPORTANT:** Copy the `report_data_fields` dict returned by `get_cost_estimate` directly into `report_data` as flat top-level keys. For example:
+> ```python
+> cost_result = get_cost_estimate(total_building_sf=3000, rooms=[...])
+> for key, value in cost_result["report_data_fields"].items():
+>     report_data[key] = value
+> ```
+> Do **NOT** restructure these into nested `q3.cost_estimate_table.*` keys.
+
+| Token | Description | Source |
+|---|---|---|
+| `q3.structural_low` | Structural cost (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.structural_high` | Structural cost (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.mep_low` | MEP cost (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.mep_high` | MEP cost (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.sprinkler_low` | Sprinkler cost (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.sprinkler_high` | Sprinkler cost (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.fire_alarm_low` | Fire alarm cost (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.fire_alarm_high` | Fire alarm cost (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.ada_low` | ADA compliance cost (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.ada_high` | ADA compliance cost (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.bathrooms_low` | Bathroom renovation cost (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.bathrooms_high` | Bathroom renovation cost (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.finish_work_low` | Finish work cost (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.finish_work_high` | Finish work cost (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.ffe_low` | Furniture, fixtures & equipment (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.ffe_high` | Furniture, fixtures & equipment (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.contingency_low` | Contingency (15% of subtotal) | `get_cost_estimate` report_data_fields |
+| `q3.contingency_high` | Contingency (20% of subtotal) | `get_cost_estimate` report_data_fields |
+| `q3.total_low` | Grand total (low estimate) | `get_cost_estimate` report_data_fields |
+| `q3.total_high` | Grand total (high estimate) | `get_cost_estimate` report_data_fields |
+| `q3.calculated_budget` | Formatted budget range (e.g., "$180,000 – $350,000") | `get_cost_estimate` report_data_fields |
+| `q3.budget_formula` | Explanation of how the budget was calculated | `get_cost_estimate` report_data_fields |
+| `q3.budget_status` | Budget vs. acquisition budget assessment | `get_cost_estimate` report_data_fields |
+| `q3.key_cost_risks` | Key cost risks from SIR + inspection findings | Synthesize from SIR + building inspection |
+
+### q4 — Schedule and milestones
+
+> **IMPORTANT:** Use flat keys with `_date` and `_confidence` suffixes. Do **NOT** nest under `q4.milestone_schedule.*`. Each milestone has a date (estimated target) and confidence level (HIGH / MEDIUM / LOW).
+
+| Token | Description | Source |
+|---|---|---|
+| `q4.acquire_property_date` | Target date to acquire / sign lease | Estimate based on findings |
+| `q4.acquire_property_confidence` | Confidence level for acquisition date | HIGH / MEDIUM / LOW |
+| `q4.obtain_permits_date` | Target date to obtain all permits | SIR permit timeline |
+| `q4.obtain_permits_confidence` | Confidence level for permit date | Based on SIR clarity |
+| `q4.construction_locked_date` | Target date for construction scope lock | Estimate |
+| `q4.construction_locked_confidence` | Confidence level for construction lock | Based on scope clarity |
+| `q4.education_regulatory_date` | Target date for education regulatory approval | `apply_school_approval_skill` timeline |
+| `q4.education_regulatory_confidence` | Confidence level for regulatory approval | Based on state requirements |
+| `q4.co_date` | Target Certificate of Occupancy date | Estimate |
+| `q4.co_confidence` | Confidence level for CO date | Based on inspection findings |
+| `q4.ready_to_open_date` | Target ready-to-open date | Estimate |
+| `q4.ready_to_open_confidence` | Confidence level for opening date | Overall assessment |
+| `q4.permit_timeline_weeks` | Permit timeline in weeks | SIR |
+| `q4.pre_app_required` | Whether pre-application meeting is required | SIR |
+| `q4.sequential_or_concurrent` | Whether milestones are sequential or concurrent | Analysis |
+| `q4.opening_target_semester` | Target semester for school opening (e.g., "Fall 2027") | Estimate |
+
+### appendix — Document links
+
+| Token | Description | Source |
+|---|---|---|
+| `appendix.sir_link` | Link to SIR document in Drive | Drive file link |
+| `appendix.inspection_link` | Link to building inspection report | Drive file link |
+| `appendix.floorplan_viability_link` | Link to ISP / Program Fit Analysis | Drive file link |
+| `appendix.phase1_esa_link` | Link to Phase I ESA report | Drive file link |
+| `appendix.lidar_link` | Link to Matterport / LiDAR scan | Drive file link |
+| `appendix.as_built_link` | Link to as-built drawings | Drive file link |
+| `appendix.pre_app_notes_link` | Link to pre-application meeting notes | Drive file link |
+| `appendix.school_registration_link` | Link to school registration documentation | Drive file link |
+| `appendix.permit_history_link` | Link to permit history | Drive file link |
+| `appendix.other_reports_links` | Links to any other relevant reports | Drive file link |
+
+### Skill tool output → report_data
+
+When you call a skill tool (`apply_e_occupancy_skill`, `apply_school_approval_skill`, `get_cost_estimate`), each returns a `report_data_fields` dict. **Copy these directly into report_data as flat keys:**
+
+```
+# Example: after calling get_cost_estimate
+cost_result = get_cost_estimate(total_building_sf=3000, rooms=[...])
+for key, value in cost_result["report_data_fields"].items():
+    report_data[key] = value  # e.g. report_data["q3.structural_low"] = "24,000"
+
+# Example: after calling apply_e_occupancy_skill
+eo_result = apply_e_occupancy_skill(building_type_description="retail", stories=1)
+for key, value in eo_result["report_data_fields"].items():
+    report_data[key] = value  # e.g. report_data["q2.e_occupancy_score"] = "85"
+```
 
 ---
 

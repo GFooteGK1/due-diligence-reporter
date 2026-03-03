@@ -14,11 +14,11 @@ from mcp.server import FastMCP
 
 from .config import get_settings
 from .google_client import GoogleClient
+from .report_schema import normalize_report_data
 from .utils import (
     build_replace_all_text_requests,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
-    flatten_report_data_for_replacement,
     send_email,
 )
 from .wrike import build_site_summary, find_site_record
@@ -1333,7 +1333,13 @@ async def get_cost_estimate(
             "grand_total":   f"${fmt(total_low)} – ${fmt(total_high)}",
         },
         "report_data_fields": report_fields,
-        "message": f"Cost estimate: ${fmt(total_low)} – ${fmt(total_high)} ({resolved_region} region, {len(room_list)} rooms, {total_building_sf:,} SF)",
+        "message": (
+            f"Cost estimate: ${fmt(total_low)} – ${fmt(total_high)} "
+            f"({resolved_region} region, {len(room_list)} rooms, {total_building_sf:,} SF). "
+            "IMPORTANT: Copy all report_data_fields directly into report_data as flat "
+            "top-level keys (e.g. report_data['q3.structural_low'] = '24,000'). "
+            "Do NOT nest them under q3.cost_estimate_table."
+        ),
     }
 
 
@@ -1432,18 +1438,22 @@ async def create_dd_report(
 
         logger.info("Copied template to new document: %s (id=%s)", doc_name, doc_id)
 
-        # Step 2: Flatten report_data into placeholder -> value mapping
-        flat_data = flatten_report_data_for_replacement(report_data)
+        # Step 2: Normalize report_data → template-aligned replacements
+        replacements, unmatched, unfilled = normalize_report_data(
+            report_data, site_name=site_name.strip(), report_date=today_str,
+        )
+        # Inject the generated doc URL (not in the agent's report_data)
+        replacements.setdefault("meta.drive_folder_url", doc_url or "")
 
-        # Add top-level convenience placeholders
-        flat_data.setdefault("site_name", site_name.strip())
-        flat_data.setdefault("report_date", today_str)
-        flat_data.setdefault("doc_url", doc_url or "")
-
-        logger.info("Prepared %d placeholder replacements", len(flat_data))
+        logger.info(
+            "Normalization: %d replacements, %d unmatched keys, %d unfilled tokens",
+            len(replacements), len(unmatched), len(unfilled),
+        )
+        if unmatched:
+            logger.warning("Unmatched agent keys (no template token): %s", unmatched)
 
         # Step 3: Build and apply replaceAllText batch update
-        replace_requests = build_replace_all_text_requests(flat_data)
+        replace_requests = build_replace_all_text_requests(replacements)
 
         if replace_requests:
             gc.batch_update_document(doc_id, replace_requests)
@@ -1463,6 +1473,8 @@ async def create_dd_report(
                 "url": doc_url,
             },
             "replacements_applied": len(replace_requests),
+            "unmatched_agent_keys": len(unmatched),
+            "unfilled_template_tokens": len(unfilled),
             "message": f"DD report created: {doc_url}",
         }
 
