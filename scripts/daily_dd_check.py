@@ -584,23 +584,11 @@ def main(site_filter: str | None = None) -> None:
                 for r in settings.dd_report_email_recipients.split(",")
                 if r.strip()
             ]
-            pending_summary = completeness.get("summary", "")
-            pending_labels = completeness.get("pending_sections", [])
-            pending_block = ""
-            if pending_labels:
-                pending_block = (
-                    "<h3>Pending Sections</h3>"
-                    "<p>The following fields could not be filled because source data was not available:</p>"
-                    "<ul>" + "".join(f"<li>{p}</li>" for p in pending_labels) + "</ul>"
-                )
-
             html_body = f"""
 <html><body>
 <h2>Due Diligence Report — {site_title}</h2>
 <p>A new Due Diligence report has been generated for <strong>{site_title}</strong>.</p>
 <p><a href="{doc_url}" style="font-size:16px;font-weight:bold;">View Report in Google Docs</a></p>
-{pending_block}
-<p style="color:#888;font-size:12px;">Generated automatically by the Alpha DD Reporter.</p>
 </body></html>
 """
             try:
