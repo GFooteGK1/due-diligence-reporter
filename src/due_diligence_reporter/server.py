@@ -489,13 +489,34 @@ def _extract_city_from_address(address: str | None) -> str | None:
     if len(parts) < 2:
         return None
 
-    state_zip_re = re.compile(r"^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$", re.IGNORECASE)
+    # Matches "TX", "TX 76248", "Texas 78746", "Florida 33431-1234", "Florida"
+    _US_STATES = {
+        "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+        "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+        "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
+        "maine", "maryland", "massachusetts", "michigan", "minnesota",
+        "mississippi", "missouri", "montana", "nebraska", "nevada",
+        "new hampshire", "new jersey", "new mexico", "new york",
+        "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
+        "pennsylvania", "rhode island", "south carolina", "south dakota",
+        "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+        "west virginia", "wisconsin", "wyoming",
+        "district of columbia",
+    }
+    state_zip_re = re.compile(
+        r"^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$"  # TX, TX 76248
+        r"|^\w[\w\s]*\s+\d{5}(-\d{4})?$",   # Texas 78746, New York 10001
+        re.IGNORECASE,
+    )
 
     for i in range(len(parts) - 1, -1, -1):
         segment = parts[i].strip()
         if not segment:
             continue
         if state_zip_re.match(segment):
+            continue
+        # Skip full state names without zip (e.g. "Florida", "New York")
+        if segment.lower() in _US_STATES:
             continue
         # Skip segments that look like street lines (start with a digit)
         if re.match(r"^\d", segment):
@@ -669,20 +690,32 @@ async def get_site_record(site_name_or_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def list_drive_documents(drive_folder_url: str) -> dict[str, Any]:
+async def list_drive_documents(
+    drive_folder_url: str, site_name: str = ""
+) -> dict[str, Any]:
     """List all files in the site's Google Drive folder and its 01_Due Diligence subfolder.
 
-    Returns file name, ID, MIME type, and modified date for each file found.
-    Use the returned file IDs and names with read_drive_document to read content.
+    Also searches the shared SIR, ISP, and Building Inspection folders when
+    *site_name* is provided.  Returns file name, ID, MIME type, modified date,
+    and doc_type classification for each file found.  Use the returned file IDs
+    and names with read_drive_document to read content.
 
     Args:
         drive_folder_url: Google Drive folder URL (from the site's Wrike record).
+        site_name: Optional site name used to match docs in shared Drive folders
+            (SIR, ISP, Building Inspection).  Pass the Wrike site title for best
+            results.
 
     Returns:
-        Dict with lists of files found in the root folder and DD subfolder.
+        Dict with lists of files found in the root folder, DD subfolder, and
+        shared folders.
     """
     logger.info("Tool called: list_drive_documents")
-    logger.info("list_drive_documents params: drive_folder_url=%s", drive_folder_url)
+    logger.info(
+        "list_drive_documents params: drive_folder_url=%s, site_name=%s",
+        drive_folder_url,
+        site_name,
+    )
 
     if not drive_folder_url or not drive_folder_url.strip():
         return {
@@ -732,7 +765,27 @@ async def list_drive_documents(drive_folder_url: str) -> dict[str, Any]:
         else:
             logger.info("No %s subfolder found", DUE_DILIGENCE_SUBFOLDER)
 
-        total_files = len(root_files) + len(dd_files)
+        # Search shared folders if site_name was provided
+        shared_folder_files: list[dict[str, Any]] = []
+        if site_name.strip():
+            record = find_site_record(site_name_or_id=site_name)
+            address: str | None = None
+            if record:
+                summary = build_site_summary(record)
+                address = summary.get("address")
+            match_terms = _build_site_match_terms(site_name.strip(), address)
+            shared_docs = _find_site_docs_in_shared_folders(gc, match_terms)
+            for doc_type, doc in shared_docs.items():
+                if doc is not None:
+                    shared_folder_files.append(doc)
+            if shared_folder_files:
+                logger.info(
+                    "Found %d files in shared folders for '%s'",
+                    len(shared_folder_files),
+                    site_name,
+                )
+
+        total_files = len(root_files) + len(dd_files) + len(shared_folder_files)
 
         return {
             "status": "success",
@@ -741,10 +794,12 @@ async def list_drive_documents(drive_folder_url: str) -> dict[str, Any]:
             "root_folder_files": root_files,
             "due_diligence_subfolder_id": dd_subfolder_id,
             "due_diligence_files": dd_files,
+            "shared_folder_files": shared_folder_files,
             "total_file_count": total_files,
             "message": (
-                f"Found {len(root_files)} files in root folder and "
-                f"{len(dd_files)} files in {DUE_DILIGENCE_SUBFOLDER} subfolder "
+                f"Found {len(root_files)} files in root folder, "
+                f"{len(dd_files)} files in {DUE_DILIGENCE_SUBFOLDER} subfolder, "
+                f"and {len(shared_folder_files)} files in shared folders "
                 f"({total_files} total)"
             ),
         }
@@ -857,14 +912,29 @@ async def read_drive_document(file_id: str, file_name: str) -> dict[str, Any]:
             "read_drive_document: extracted %d characters from %s", len(text_content), file_name
         )
 
+        # Truncate very large documents to avoid exceeding the LLM context window.
+        max_chars = 50_000
+        truncated = False
+        original_length = len(text_content)
+        if original_length > max_chars:
+            text_content = text_content[:max_chars]
+            truncated = True
+            logger.warning(
+                "Truncated %s from %d to %d characters", file_name, original_length, max_chars
+            )
+
         return {
             "status": "success",
             "file_id": file_id,
             "file_name": file_name,
             "mime_type": mime_type,
-            "character_count": len(text_content),
+            "character_count": original_length,
+            "truncated": truncated,
             "text": text_content,
-            "message": f"Successfully read {len(text_content)} characters from '{file_name}'",
+            "message": (
+                f"Successfully read {original_length} characters from '{file_name}'"
+                + (f" (truncated to {max_chars} chars)" if truncated else "")
+            ),
         }
 
     except Exception as e:

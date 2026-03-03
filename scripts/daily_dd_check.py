@@ -83,11 +83,12 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "list_drive_documents",
-        "description": "List all files in the site's Google Drive folder and its 01_Due Diligence subfolder. Each file includes a doc_type field.",
+        "description": "List all files in the site's Google Drive folder, its 01_Due Diligence subfolder, and shared SIR/ISP/Building Inspection folders. Each file includes a doc_type field. Always pass site_name to find shared folder docs.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "drive_folder_url": {"type": "string", "description": "Google Drive folder URL"},
+                "site_name": {"type": "string", "description": "Site name from Wrike (used to match docs in shared folders)"},
             },
             "required": ["drive_folder_url"],
         },
@@ -402,8 +403,9 @@ def _run_dd_report_agent(site_title: str, system_prompt: str) -> dict[str, Any]:
 
         messages.append({"role": "user", "content": tool_results})
 
-        # Stop if we have a report
-        if response.stop_reason == "end_turn" and doc_id:
+        # Stop as soon as we have a report — completeness check happens separately
+        if doc_id:
+            logger.info("Report created, stopping agent loop after %d iterations", iteration + 1)
             break
 
     if doc_id:
@@ -616,25 +618,25 @@ def main() -> None:
             "pending_count": completeness.get("pending_section_count", 0),
         })
 
-    # Summary
+    # Summary — use ASCII-safe markers to avoid encoding errors on Windows
     print("\n" + "=" * 60)
-    print(f"Daily DD Check — {len(results)} sites processed")
+    print(f"Daily DD Check -- {len(results)} sites processed")
     print("=" * 60)
     for r in results:
         status = r.get("status", "?")
         site = r.get("site", "?")
         if status == "report_created":
-            print(f"  ✅ {site} — report created ({r.get('pending_count', 0)} pending fields)")
+            print(f"  [OK] {site} -- report created ({r.get('pending_count', 0)} pending fields)")
         elif status == "waiting_on_docs":
-            print(f"  ⏳ {site} — waiting on: {', '.join(r.get('missing', []))}")
+            print(f"  [..] {site} -- waiting on: {', '.join(r.get('missing', []))}")
         elif status == "report_exists":
-            print(f"  ℹ️  {site} — report already exists")
+            print(f"  [--] {site} -- report already exists")
         elif status == "report_incomplete":
-            print(f"  ⚠️  {site} — report incomplete ({len(r.get('unresolved_tokens', []))} unfilled tokens)")
+            print(f"  [!!] {site} -- report incomplete ({len(r.get('unresolved_tokens', []))} unfilled tokens)")
         elif status == "generation_failed":
-            print(f"  ❌ {site} — generation failed: {r.get('error')}")
+            print(f"  [XX] {site} -- generation failed: {r.get('error')}")
         else:
-            print(f"  ?  {site} — {status}")
+            print(f"  [??] {site} -- {status}")
     print("=" * 60)
 
 
