@@ -475,6 +475,126 @@ def _classify_document_type(filename: str) -> str:
     return "unknown"
 
 
+def _extract_city_from_address(address: str | None) -> str | None:
+    """Extract city from a US-style address like '1234 Main St, Keller, TX 76248'.
+
+    Splits on commas, walks backward skipping state/zip segments, and returns
+    the first segment that looks like a city name.  Returns ``None`` if parsing
+    fails.
+    """
+    if not address:
+        return None
+
+    parts = [p.strip() for p in address.split(",")]
+    if len(parts) < 2:
+        return None
+
+    state_zip_re = re.compile(r"^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$", re.IGNORECASE)
+
+    for i in range(len(parts) - 1, -1, -1):
+        segment = parts[i].strip()
+        if not segment:
+            continue
+        if state_zip_re.match(segment):
+            continue
+        # Skip segments that look like street lines (start with a digit)
+        if re.match(r"^\d", segment):
+            continue
+        return segment
+
+    return None
+
+
+def _build_site_match_terms(
+    site_title: str, address: str | None = None
+) -> list[str]:
+    """Build match terms from a site title and optional address for filename matching.
+
+    Returns terms ordered most-specific first:
+      1. Full site title (backward compat)
+      2. City extracted from address
+      3. Significant words from title (excluding stop words, short words, small numbers)
+    """
+    stop_words = {"alpha", "school", "the", "a", "an"}
+    terms: list[str] = []
+    seen_lower: set[str] = set()
+
+    def _add(term: str) -> None:
+        low = term.lower()
+        if low not in seen_lower:
+            terms.append(term)
+            seen_lower.add(low)
+
+    # 1. Full site title
+    if site_title.strip():
+        _add(site_title.strip())
+
+    # 2. City from address
+    city = _extract_city_from_address(address)
+    if city:
+        _add(city)
+
+    # 3. Significant words from title
+    for word in site_title.split():
+        w = word.strip()
+        low = w.lower()
+        if low in stop_words:
+            continue
+        if len(low) < 3:
+            continue
+        # Skip pure numbers shorter than 4 digits (avoids matching dates like "25")
+        if low.isdigit() and len(low) < 4:
+            continue
+        _add(w)
+
+    return terms
+
+
+def _find_site_docs_in_shared_folders(
+    gc: GoogleClient,
+    match_terms: list[str],
+) -> dict[str, dict[str, Any] | None]:
+    """Search the three shared Drive folders (SIR, ISP, Building Inspection) for docs matching a site.
+
+    Matches files whose name contains ANY of the *match_terms* as a
+    case-insensitive substring.  Use :func:`_build_site_match_terms` to build
+    the term list from a site title and address.
+
+    Returns ``{"sir": file_dict|None, "isp": file_dict|None, "building_inspection": file_dict|None}``.
+    """
+    settings = get_settings()
+    folder_map: dict[str, str] = {
+        "sir": settings.sir_folder_id,
+        "isp": settings.isp_folder_id,
+        "building_inspection": settings.building_inspection_folder_id,
+    }
+
+    result: dict[str, dict[str, Any] | None] = {
+        "sir": None,
+        "isp": None,
+        "building_inspection": None,
+    }
+
+    needles = [t.lower() for t in match_terms if t]
+
+    for doc_type, folder_id in folder_map.items():
+        if not folder_id:
+            continue
+        try:
+            files = gc.list_files_in_folder(folder_id)
+            for f in files:
+                fname = f.get("name", "").lower()
+                if any(needle in fname for needle in needles):
+                    result[doc_type] = {**f, "doc_type": doc_type}
+                    break
+        except Exception as e:
+            logger.warning(
+                "Failed to list shared %s folder (%s): %s", doc_type, folder_id, e
+            )
+
+    return result
+
+
 def _make_google_client() -> GoogleClient:
     """Initialise and return a GoogleClient using settings from config."""
     settings = get_settings()
@@ -1297,8 +1417,8 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
         site_name_or_id: Site name, Wrike record ID, or Wrike permalink URL.
 
     Returns:
-        Dict with sir_found, isp_found, report_exists, missing_docs, ready_for_report,
-        and a files map keyed by doc_type.
+        Dict with sir_found, isp_found, inspection_found, report_exists, missing_docs,
+        ready_for_report, and a files map keyed by doc_type.
     """
     logger.info("Tool called: check_site_readiness — %s", site_name_or_id)
 
@@ -1320,6 +1440,7 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
 
         summary = build_site_summary(record)
         site_title = summary.get("title", site_name_or_id)
+        address = summary.get("address")
         drive_folder_url = summary.get("drive_folder_url")
 
         if not drive_folder_url:
@@ -1339,13 +1460,17 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
 
         gc = _make_google_client()
 
-        # List + classify root files
+        # 1. Search the three shared folders (SIR/, ISP/, Building Inspection/)
+        match_terms = _build_site_match_terms(site_title, address)
+        logger.info("Match terms for '%s': %s", site_title, match_terms)
+        shared_docs = _find_site_docs_in_shared_folders(gc, match_terms)
+
+        # 2. List + classify files in the site's own folder (fallback)
         root_files = [
             {**f, "doc_type": _classify_document_type(f.get("name", ""))}
             for f in gc.list_files_in_folder(folder_id)
         ]
 
-        # List + classify DD subfolder files
         dd_files: list[dict[str, Any]] = []
         dd_subfolder = gc.find_subfolder_by_name(folder_id, DUE_DILIGENCE_SUBFOLDER)
         if dd_subfolder:
@@ -1356,23 +1481,24 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                     for f in gc.list_files_in_folder(dd_subfolder_id)
                 ]
 
-        all_files = root_files + dd_files
+        all_site_files = root_files + dd_files
 
-        # Find first file of each type
+        # 3. Build files_by_type — shared folders take priority, site folder fills gaps
         files_by_type: dict[str, dict[str, Any] | None] = {
-            "sir": None,
-            "isp": None,
-            "building_inspection": None,
+            "sir": shared_docs.get("sir"),
+            "isp": shared_docs.get("isp"),
+            "building_inspection": shared_docs.get("building_inspection"),
             "phase_i_esa": None,
             "dd_report": None,
         }
-        for f in all_files:
+        for f in all_site_files:
             dt = f.get("doc_type", "unknown")
             if dt in files_by_type and files_by_type[dt] is None:
                 files_by_type[dt] = f
 
         sir_found = files_by_type["sir"] is not None
         isp_found = files_by_type["isp"] is not None
+        inspection_found = files_by_type["building_inspection"] is not None
         report_exists = files_by_type["dd_report"] is not None
 
         missing_docs: list[str] = []
@@ -1380,14 +1506,17 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             missing_docs.append("sir")
         if not isp_found:
             missing_docs.append("isp")
+        if not inspection_found:
+            missing_docs.append("building_inspection")
 
-        ready_for_report = sir_found and isp_found and not report_exists
+        ready_for_report = sir_found and isp_found and inspection_found and not report_exists
 
         return {
             "status": "success",
             "site_title": site_title,
             "sir_found": sir_found,
             "isp_found": isp_found,
+            "inspection_found": inspection_found,
             "report_exists": report_exists,
             "missing_docs": missing_docs,
             "ready_for_report": ready_for_report,
@@ -1397,6 +1526,7 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                 f"Site '{site_title}': "
                 f"SIR={'✓' if sir_found else '✗'}, "
                 f"ISP={'✓' if isp_found else '✗'}, "
+                f"Inspection={'✓' if inspection_found else '✗'}, "
                 f"report={'exists' if report_exists else 'not yet created'}. "
                 f"{'Ready for report generation.' if ready_for_report else 'Not ready — ' + (', '.join(missing_docs) + ' missing.' if missing_docs else 'report already exists.')}"
             ),

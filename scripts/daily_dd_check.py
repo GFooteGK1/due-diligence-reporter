@@ -42,7 +42,9 @@ from due_diligence_reporter.config import get_settings
 from due_diligence_reporter.google_client import GoogleClient
 from due_diligence_reporter.server import (
     DUE_DILIGENCE_SUBFOLDER,
+    _build_site_match_terms,
     _classify_document_type,
+    _find_site_docs_in_shared_folders,
 )
 from due_diligence_reporter.utils import (
     extract_folder_id_from_url,
@@ -51,6 +53,7 @@ from due_diligence_reporter.utils import (
 )
 from due_diligence_reporter.wrike import (
     _get_all_site_records,
+    extract_address_from_record,
     extract_google_folder_from_record,
     load_wrike_config,
 )
@@ -221,15 +224,70 @@ def _route_tool_call_sync(tool_name: str, tool_input: dict[str, Any]) -> Any:
 # Readiness check (without MCP layer)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _list_shared_folders_once(
+    gc: GoogleClient,
+) -> dict[str, list[dict[str, Any]]]:
+    """List files in the three shared Drive folders once (cached per cron run).
+
+    Returns {"sir": [...], "isp": [...], "building_inspection": [...]}.
+    """
+    settings = get_settings()
+    folder_map = {
+        "sir": settings.sir_folder_id,
+        "isp": settings.isp_folder_id,
+        "building_inspection": settings.building_inspection_folder_id,
+    }
+    result: dict[str, list[dict[str, Any]]] = {}
+    for doc_type, folder_id in folder_map.items():
+        if not folder_id:
+            result[doc_type] = []
+            continue
+        try:
+            result[doc_type] = gc.list_files_in_folder(folder_id)
+        except Exception as e:
+            logger.warning("Failed to list shared %s folder (%s): %s", doc_type, folder_id, e)
+            result[doc_type] = []
+    return result
+
+
+def _match_site_in_shared_cache(
+    match_terms: list[str],
+    shared_cache: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any] | None]:
+    """Find docs matching any of *match_terms* in the pre-fetched shared folder file lists."""
+    needles = [t.lower() for t in match_terms if t]
+    result: dict[str, dict[str, Any] | None] = {
+        "sir": None,
+        "isp": None,
+        "building_inspection": None,
+    }
+    for doc_type, files in shared_cache.items():
+        for f in files:
+            fname = f.get("name", "").lower()
+            if any(needle in fname for needle in needles):
+                result[doc_type] = {**f, "doc_type": doc_type}
+                break
+    return result
+
+
 def _check_site_readiness_direct(
     gc: GoogleClient,
     drive_folder_url: str,
+    match_terms: list[str],
+    shared_cache: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Check site document readiness directly without going through MCP."""
     folder_id = extract_folder_id_from_url(drive_folder_url)
     if not folder_id:
-        return {"sir_found": False, "isp_found": False, "report_exists": False, "error": "bad_url"}
+        return {
+            "sir_found": False, "isp_found": False, "inspection_found": False,
+            "report_exists": False, "error": "bad_url",
+        }
 
+    # 1. Match docs from pre-fetched shared folder cache
+    shared_docs = _match_site_in_shared_cache(match_terms, shared_cache)
+
+    # 2. List + classify site's own folder (fallback)
     root_files = [
         {**f, "doc_type": _classify_document_type(f.get("name", ""))}
         for f in gc.list_files_in_folder(folder_id)
@@ -245,14 +303,26 @@ def _check_site_readiness_direct(
                 for f in gc.list_files_in_folder(dd_sub_id)
             ]
 
-    all_files = root_files + dd_files
-    types_found = {f.get("doc_type") for f in all_files}
+    all_site_files = root_files + dd_files
+
+    # 3. Merge — shared folders take priority, site folder fills gaps
+    files_by_type: dict[str, dict[str, Any] | None] = {
+        "sir": shared_docs.get("sir"),
+        "isp": shared_docs.get("isp"),
+        "building_inspection": shared_docs.get("building_inspection"),
+        "dd_report": None,
+    }
+    for f in all_site_files:
+        dt = f.get("doc_type", "unknown")
+        if dt in files_by_type and files_by_type[dt] is None:
+            files_by_type[dt] = f
 
     return {
-        "sir_found": "sir" in types_found,
-        "isp_found": "isp" in types_found,
-        "report_exists": "dd_report" in types_found,
-        "all_files": all_files,
+        "sir_found": files_by_type["sir"] is not None,
+        "isp_found": files_by_type["isp"] is not None,
+        "inspection_found": files_by_type["building_inspection"] is not None,
+        "report_exists": files_by_type["dd_report"] is not None,
+        "all_files": all_site_files,
     }
 
 
@@ -366,6 +436,16 @@ def main() -> None:
     all_records = _get_all_site_records(cfg=wrike_cfg)
     logger.info("Found %d site records", len(all_records))
 
+    # Pre-fetch shared folder file lists once for all sites
+    logger.info("Listing shared Drive folders (SIR, ISP, Building Inspection)...")
+    shared_cache = _list_shared_folders_once(gc)
+    logger.info(
+        "Shared folder files: SIR=%d, ISP=%d, Inspection=%d",
+        len(shared_cache.get("sir", [])),
+        len(shared_cache.get("isp", [])),
+        len(shared_cache.get("building_inspection", [])),
+    )
+
     results: list[dict[str, Any]] = []
 
     for record in all_records:
@@ -376,10 +456,12 @@ def main() -> None:
             logger.debug("Skipping '%s' — no Drive folder URL", site_title)
             continue
 
-        logger.info("Checking site: %s", site_title)
+        address = extract_address_from_record(record)
+        match_terms = _build_site_match_terms(site_title, address)
+        logger.info("Checking site: %s (match terms: %s)", site_title, match_terms)
 
         try:
-            readiness = _check_site_readiness_direct(gc, drive_folder_url)
+            readiness = _check_site_readiness_direct(gc, drive_folder_url, match_terms, shared_cache)
         except Exception as e:
             logger.error("Failed to check readiness for '%s': %s", site_title, e)
             results.append({"site": site_title, "status": "error", "error": str(e)})
@@ -387,21 +469,25 @@ def main() -> None:
 
         sir_found = readiness.get("sir_found", False)
         isp_found = readiness.get("isp_found", False)
+        inspection_found = readiness.get("inspection_found", False)
         report_exists = readiness.get("report_exists", False)
 
         # Case 1: Missing required documents → alert
-        if not sir_found or not isp_found:
+        if not sir_found or not isp_found or not inspection_found:
             missing = []
             if not sir_found:
                 missing.append("SIR")
             if not isp_found:
                 missing.append("ISP")
+            if not inspection_found:
+                missing.append("Building Inspection")
 
             msg_lines = [
                 f"🔍 DD Check – {site_title}",
                 "Status: WAITING ON DOCUMENTS",
                 f"  {'✅' if sir_found else '❌'} SIR {'found' if sir_found else 'not found'}",
                 f"  {'✅' if isp_found else '❌'} ISP {'found' if isp_found else 'not found'}",
+                f"  {'✅' if inspection_found else '❌'} Building Inspection {'found' if inspection_found else 'not found'}",
                 f"Drive: {drive_folder_url}",
             ]
             chat_msg = "\n".join(msg_lines)
