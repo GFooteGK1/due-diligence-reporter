@@ -48,6 +48,20 @@ class Settings(BaseSettings):
         description="Parent Drive folder ID that contains all site folders",
     )
 
+    # Shared Drive folder IDs (SIR, ISP, Building Inspection under "All Locations")
+    sir_folder_id: str = Field(
+        "1TTjxOEfjeJZoXMAeGueJ1QbVBzXBDE4C",
+        description="Drive folder ID for shared SIR documents",
+    )
+    isp_folder_id: str = Field(
+        "1E9RXgVeKxeITUdFw5lvyolCx6CJLEFUg",
+        description="Drive folder ID for shared ISP documents",
+    )
+    building_inspection_folder_id: str = Field(
+        "15dfKaAnic9VRKhp_-vFSpTr7uPk_hhKo",
+        description="Drive folder ID for shared Building Inspection documents",
+    )
+
     # Building Optimizer / Pricing API
     pricing_api_url: str = Field(
         "https://pricing-api-738625530258.us-central1.run.app",
