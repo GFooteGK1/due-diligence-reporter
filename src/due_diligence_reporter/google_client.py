@@ -1,7 +1,8 @@
-"""Google Client for Drive and Docs API operations with OAuth."""
+"""Google Client for Drive, Docs, and Gmail API operations with OAuth."""
 
 from __future__ import annotations
 
+import base64
 import logging
 from pathlib import Path
 from typing import Any
@@ -11,18 +12,20 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaInMemoryUpload
 
 logger = logging.getLogger("[google_client]")
 
 
 class GoogleClient:
-    """Client for interacting with Drive and Docs APIs using OAuth."""
+    """Client for interacting with Drive, Docs, and Gmail APIs using OAuth."""
 
     def __init__(self, credentials: Credentials) -> None:
         self.credentials = credentials
         self.drive_service = build("drive", "v3", credentials=credentials)
         self.docs_service = build("docs", "v1", credentials=credentials)
-        logger.info("Initialized GoogleClient with Drive v3 and Docs v1 APIs")
+        self.gmail_service = build("gmail", "v1", credentials=credentials)
+        logger.info("Initialized GoogleClient with Drive v3, Docs v1, and Gmail v1 APIs")
 
     @classmethod
     def from_oauth_config(
@@ -312,3 +315,205 @@ class GoogleClient:
         except HttpError as error:
             logger.error("Failed to batch update document %s: %s", document_id, error)
             raise RuntimeError(f"Failed to batch update document: {error}") from error
+
+    # ---------- Drive Upload ----------
+
+    def upload_file_to_folder(
+        self,
+        folder_id: str,
+        file_name: str,
+        file_bytes: bytes,
+        mime_type: str = "application/pdf",
+    ) -> dict[str, Any]:
+        """Upload a file to a specific Drive folder.
+
+        Returns the new file metadata including 'id', 'name', 'webViewLink'.
+        """
+        logger.info("Uploading '%s' (%d bytes) to folder %s", file_name, len(file_bytes), folder_id)
+
+        media = MediaInMemoryUpload(file_bytes, mimetype=mime_type, resumable=False)
+        body: dict[str, Any] = {
+            "name": file_name,
+            "parents": [folder_id],
+        }
+
+        try:
+            result = (
+                self.drive_service.files()
+                .create(
+                    body=body,
+                    media_body=media,
+                    fields="id,name,webViewLink",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            logger.info("Uploaded file: %s (id: %s)", file_name, result.get("id"))
+            return result
+
+        except HttpError as error:
+            logger.error("Failed to upload '%s': %s", file_name, error)
+            raise RuntimeError(f"Failed to upload file: {error}") from error
+
+    def file_exists_in_folder(self, folder_id: str, file_name: str) -> bool:
+        """Check if a file with the exact name already exists in a folder."""
+        query = (
+            f"'{folder_id}' in parents"
+            f" and name='{file_name}'"
+            " and trashed=false"
+        )
+        try:
+            response = (
+                self.drive_service.files()
+                .list(
+                    q=query,
+                    fields="files(id)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute()
+            )
+            return len(response.get("files", [])) > 0
+        except HttpError as error:
+            logger.warning("Failed to check file existence: %s", error)
+            return False
+
+    # ---------- Gmail API Methods ----------
+
+    def gmail_search(self, query: str, max_results: int = 50) -> list[dict[str, Any]]:
+        """Search Gmail messages matching a query.
+
+        Returns list of message stubs with 'id' and 'threadId'.
+        """
+        logger.info("Gmail search: %s (max %d)", query, max_results)
+
+        try:
+            messages: list[dict[str, Any]] = []
+            page_token: str | None = None
+
+            while len(messages) < max_results:
+                response = (
+                    self.gmail_service.users()
+                    .messages()
+                    .list(
+                        userId="me",
+                        q=query,
+                        maxResults=min(max_results - len(messages), 100),
+                        pageToken=page_token,
+                    )
+                    .execute()
+                )
+                messages.extend(response.get("messages", []))
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+
+            logger.info("Gmail search returned %d messages", len(messages))
+            return messages[:max_results]
+
+        except HttpError as error:
+            logger.error("Gmail search failed: %s", error)
+            raise RuntimeError(f"Gmail search failed: {error}") from error
+
+    def gmail_get_message(self, message_id: str) -> dict[str, Any]:
+        """Get a full Gmail message by ID (includes headers and parts)."""
+        logger.info("Fetching Gmail message: %s", message_id)
+
+        try:
+            message = (
+                self.gmail_service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="full")
+                .execute()
+            )
+            return message
+
+        except HttpError as error:
+            logger.error("Failed to get Gmail message %s: %s", message_id, error)
+            raise RuntimeError(f"Failed to get Gmail message: {error}") from error
+
+    def gmail_get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        """Download a Gmail attachment by message and attachment ID.
+
+        Returns the raw attachment bytes.
+        """
+        logger.info("Downloading Gmail attachment: msg=%s, att=%s", message_id, attachment_id)
+
+        try:
+            attachment = (
+                self.gmail_service.users()
+                .messages()
+                .attachments()
+                .get(userId="me", messageId=message_id, id=attachment_id)
+                .execute()
+            )
+            data = attachment.get("data", "")
+            return base64.urlsafe_b64decode(data)
+
+        except HttpError as error:
+            logger.error("Failed to get attachment: %s", error)
+            raise RuntimeError(f"Failed to get Gmail attachment: {error}") from error
+
+    def gmail_modify_labels(
+        self,
+        message_id: str,
+        add_labels: list[str] | None = None,
+        remove_labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Add or remove labels on a Gmail message."""
+        body: dict[str, list[str]] = {
+            "addLabelIds": add_labels or [],
+            "removeLabelIds": remove_labels or [],
+        }
+        logger.info(
+            "Modifying labels on %s: +%s -%s",
+            message_id,
+            add_labels or [],
+            remove_labels or [],
+        )
+
+        try:
+            result = (
+                self.gmail_service.users()
+                .messages()
+                .modify(userId="me", id=message_id, body=body)
+                .execute()
+            )
+            return result
+
+        except HttpError as error:
+            logger.error("Failed to modify labels on %s: %s", message_id, error)
+            raise RuntimeError(f"Failed to modify Gmail labels: {error}") from error
+
+    def gmail_get_or_create_label(self, label_name: str) -> str:
+        """Find or create a Gmail label by name. Returns the label ID."""
+        logger.info("Looking up Gmail label: %s", label_name)
+
+        try:
+            response = (
+                self.gmail_service.users().labels().list(userId="me").execute()
+            )
+            for label in response.get("labels", []):
+                if label.get("name") == label_name:
+                    logger.info("Found existing label: %s (id: %s)", label_name, label["id"])
+                    return label["id"]
+
+            # Create the label
+            body = {
+                "name": label_name,
+                "labelListVisibility": "labelShow",
+                "messageListVisibility": "show",
+            }
+            created = (
+                self.gmail_service.users()
+                .labels()
+                .create(userId="me", body=body)
+                .execute()
+            )
+            label_id = created["id"]
+            logger.info("Created new label: %s (id: %s)", label_name, label_id)
+            return label_id
+
+        except HttpError as error:
+            logger.error("Failed to get/create label '%s': %s", label_name, error)
+            raise RuntimeError(f"Failed to get/create Gmail label: {error}") from error

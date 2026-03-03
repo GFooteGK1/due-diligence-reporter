@@ -27,13 +27,14 @@ class Settings(BaseSettings):
         description="Port for OAuth callback server",
     )
 
-    # Google API Scopes — Drive (read/write) + Documents (create/edit)
+    # Google API Scopes — Drive (read/write) + Documents (create/edit) + Gmail (modify)
     google_scopes: list[str] = Field(
         default=[
             "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/gmail.modify",
         ],
-        description="OAuth scopes for Drive and Docs operations",
+        description="OAuth scopes for Drive, Docs, and Gmail operations",
     )
 
     # DD Report Template
@@ -82,6 +83,20 @@ class Settings(BaseSettings):
     # Google Chat
     google_chat_webhook_url: str = Field(
         "", description="Google Chat incoming webhook URL for notifications"
+    )
+
+    # Inbox Scanner
+    inbox_scan_query: str = Field(
+        "to:auth.permitting@trilogy.com has:attachment filename:pdf is:unread",
+        description="Gmail search query for incoming DD documents",
+    )
+    inbox_processed_label: str = Field(
+        "DD-Processed",
+        description="Gmail label applied to processed inbox emails",
+    )
+    inbox_scan_max_results: int = Field(
+        50,
+        description="Maximum number of emails to process per inbox scan run",
     )
 
     # Logging
