@@ -22,14 +22,28 @@ def extract_folder_id_from_url(url: str) -> str | None:
     Supports formats:
     - https://drive.google.com/drive/folders/FOLDER_ID
     - https://drive.google.com/drive/u/0/folders/FOLDER_ID
+    - https://drive.google.com/open?id=FOLDER_ID
+    - HTML anchor tags wrapping any of the above (from Wrike rich-text fields)
 
     Returns the folder ID string, or None if not parseable.
     """
+    # If the value is an HTML anchor tag, extract the href first
+    href_match = re.search(r'href="([^"]+)"', url)
+    if href_match:
+        url = href_match.group(1).replace("&amp;", "&")
+
     # Match /folders/<ID> anywhere in the URL
     match = re.search(r"/folders/([a-zA-Z0-9_-]+)", url)
     if match:
         folder_id = match.group(1)
         logger.debug("Extracted folder ID from URL: %s", folder_id)
+        return folder_id
+
+    # Match ?id=<ID> (from /open?id=... links)
+    id_match = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    if id_match:
+        folder_id = id_match.group(1)
+        logger.debug("Extracted folder ID from ?id= param: %s", folder_id)
         return folder_id
 
     logger.warning("Could not extract folder ID from URL: %s", url)
