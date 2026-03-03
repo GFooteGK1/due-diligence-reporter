@@ -374,10 +374,10 @@ The report pipeline module contains all shared logic used by both the inbox scan
 **Agent model:** `claude-sonnet-4-6`
 
 **Stage filter:** Only processes sites in these Overall Site Stages:
+- `1. Looking for Site`
 - `2. Evaluating Potential Site (LOI)`
-- `3. Site Chosen, FTO in Progress`
 
-Sites in earlier stages (prospecting) or later stages (FTO signed, operational) are skipped.
+Sites in later stages (FTO in progress, FTO signed, operational) are skipped.
 
 **Flow per site:**
 

@@ -59,8 +59,8 @@ logger = logging.getLogger("daily_dd_check")
 
 # Only process sites in these Overall Site Stages
 ACTIVE_STAGES = {
+    "1. Looking for Site",
     "2. Evaluating Potential Site (LOI)",
-    "3. Site Chosen, FTO in Progress",
 }
 
 
