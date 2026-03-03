@@ -58,6 +58,18 @@ class Settings(BaseSettings):
         description="API key for the Building Optimizer pricing API (X-API-Key header)",
     )
 
+    # Email (Gmail SMTP with App Password)
+    email_sender: str = Field("", description="Gmail address for sending DD report emails")
+    email_app_password: str = Field("", description="Gmail App Password for the sender account")
+    dd_report_email_recipients: str = Field(
+        "", description="Comma-separated list of recipient email addresses"
+    )
+
+    # Google Chat
+    google_chat_webhook_url: str = Field(
+        "", description="Google Chat incoming webhook URL for notifications"
+    )
+
     # Logging
     log_level: str = Field("INFO", description="Logging level")
 

@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from io import BytesIO
 from typing import Any
+
+import requests as _requests
 
 logger = logging.getLogger("[utils]")
 
@@ -87,6 +92,52 @@ def flatten_report_data_for_replacement(
             result[full_key] = str(value)
 
     return result
+
+
+def send_email(
+    sender: str,
+    app_password: str,
+    recipients: list[str],
+    subject: str,
+    html_body: str,
+) -> None:
+    """Send an HTML email via Gmail SMTP using an App Password.
+
+    Args:
+        sender: Gmail address to send from.
+        app_password: Gmail App Password for the sender account.
+        recipients: List of recipient email addresses.
+        subject: Email subject line.
+        html_body: HTML email body content.
+    """
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    msg.attach(MIMEText(html_body, "html"))
+
+    logger.info("Sending email to %d recipients: %s", len(recipients), subject)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(sender, app_password)
+        server.sendmail(sender, recipients, msg.as_string())
+    logger.info("Email sent successfully")
+
+
+def post_google_chat_message(webhook_url: str, text: str) -> None:
+    """Post a message to a Google Chat space via incoming webhook.
+
+    Args:
+        webhook_url: Google Chat incoming webhook URL.
+        text: Message text (supports basic markdown).
+    """
+    logger.info("Posting Google Chat message (%d chars)", len(text))
+    resp = _requests.post(
+        webhook_url,
+        json={"text": text},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    logger.info("Google Chat message posted successfully")
 
 
 def build_replace_all_text_requests(

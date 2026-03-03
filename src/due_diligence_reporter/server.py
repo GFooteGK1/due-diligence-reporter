@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -18,6 +19,7 @@ from .utils import (
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     flatten_report_data_for_replacement,
+    send_email,
 )
 from .wrike import build_site_summary, find_site_record
 
@@ -436,6 +438,43 @@ def _call_pricing_api(
     return resp.json()  # type: ignore[no-any-return]
 
 
+def _classify_document_type(filename: str) -> str:
+    """Classify a Drive file by its document type based on the filename.
+
+    Uses case-insensitive keyword matching. More specific patterns are checked first.
+
+    Returns one of: "isp", "sir", "building_inspection", "phase_i_esa",
+    "matterport", "dd_report", or "unknown".
+    """
+    name = filename.lower()
+
+    # DD Report — check before other patterns
+    if "dd report" in name:
+        return "dd_report"
+
+    # Phase I ESA — check before "inspection" to avoid false matches
+    if "phase i" in name or "phase 1" in name or " esa" in name or name.startswith("esa"):
+        return "phase_i_esa"
+
+    # ISP — word boundary match, or filename ends with "-ISP" (before extension)
+    if re.search(r"\bisp\b", name) or re.search(r"-isp(\.[^.]+)?$", name):
+        return "isp"
+
+    # SIR — word boundary match
+    if re.search(r"\bsir\b", name):
+        return "sir"
+
+    # Building inspection
+    if "inspection" in name:
+        return "building_inspection"
+
+    # Matterport
+    if "matterport" in name:
+        return "matterport"
+
+    return "unknown"
+
+
 def _make_google_client() -> GoogleClient:
     """Initialise and return a GoogleClient using settings from config."""
     settings = get_settings()
@@ -547,7 +586,11 @@ async def list_drive_documents(drive_folder_url: str) -> dict[str, Any]:
         gc = _make_google_client()
 
         # List files in root folder
-        root_files = gc.list_files_in_folder(folder_id)
+        root_files_raw = gc.list_files_in_folder(folder_id)
+        root_files = [
+            {**f, "doc_type": _classify_document_type(f.get("name", ""))}
+            for f in root_files_raw
+        ]
         logger.info("Found %d files in root folder %s", len(root_files), folder_id)
 
         # Find and list files in 01_Due Diligence subfolder
@@ -558,7 +601,11 @@ async def list_drive_documents(drive_folder_url: str) -> dict[str, Any]:
         if dd_subfolder:
             dd_subfolder_id = dd_subfolder.get("id")
             if dd_subfolder_id:
-                dd_files = gc.list_files_in_folder(dd_subfolder_id)
+                dd_files_raw = gc.list_files_in_folder(dd_subfolder_id)
+                dd_files = [
+                    {**f, "doc_type": _classify_document_type(f.get("name", ""))}
+                    for f in dd_files_raw
+                ]
                 logger.info(
                     "Found %d files in %s subfolder", len(dd_files), DUE_DILIGENCE_SUBFOLDER
                 )
@@ -1234,6 +1281,286 @@ async def create_dd_report(
         return {
             "status": "error",
             "error": "Failed to create DD report",
+            "message": str(e),
+        }
+
+
+@mcp.tool()
+async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
+    """Check whether a site has all required DD documents and whether a report already exists.
+
+    Looks up the site's Drive folder, lists and classifies all files, then reports
+    which key documents (SIR, ISP, building inspection, Phase I ESA) are present and
+    whether a DD Report has already been created.
+
+    Args:
+        site_name_or_id: Site name, Wrike record ID, or Wrike permalink URL.
+
+    Returns:
+        Dict with sir_found, isp_found, report_exists, missing_docs, ready_for_report,
+        and a files map keyed by doc_type.
+    """
+    logger.info("Tool called: check_site_readiness — %s", site_name_or_id)
+
+    if not site_name_or_id or not site_name_or_id.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "site_name_or_id must be a non-empty string",
+        }
+
+    try:
+        record = find_site_record(site_name_or_id=site_name_or_id)
+        if not record:
+            return {
+                "status": "error",
+                "error": "Site record not found",
+                "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
+            }
+
+        summary = build_site_summary(record)
+        site_title = summary.get("title", site_name_or_id)
+        drive_folder_url = summary.get("drive_folder_url")
+
+        if not drive_folder_url:
+            return {
+                "status": "error",
+                "error": "No Drive folder",
+                "message": f"Site record '{site_title}' has no Google Drive folder URL in Wrike.",
+            }
+
+        folder_id = extract_folder_id_from_url(drive_folder_url)
+        if not folder_id:
+            return {
+                "status": "error",
+                "error": "Invalid Drive folder URL",
+                "message": f"Could not parse folder ID from: {drive_folder_url}",
+            }
+
+        gc = _make_google_client()
+
+        # List + classify root files
+        root_files = [
+            {**f, "doc_type": _classify_document_type(f.get("name", ""))}
+            for f in gc.list_files_in_folder(folder_id)
+        ]
+
+        # List + classify DD subfolder files
+        dd_files: list[dict[str, Any]] = []
+        dd_subfolder = gc.find_subfolder_by_name(folder_id, DUE_DILIGENCE_SUBFOLDER)
+        if dd_subfolder:
+            dd_subfolder_id = dd_subfolder.get("id")
+            if dd_subfolder_id:
+                dd_files = [
+                    {**f, "doc_type": _classify_document_type(f.get("name", ""))}
+                    for f in gc.list_files_in_folder(dd_subfolder_id)
+                ]
+
+        all_files = root_files + dd_files
+
+        # Find first file of each type
+        files_by_type: dict[str, dict[str, Any] | None] = {
+            "sir": None,
+            "isp": None,
+            "building_inspection": None,
+            "phase_i_esa": None,
+            "dd_report": None,
+        }
+        for f in all_files:
+            dt = f.get("doc_type", "unknown")
+            if dt in files_by_type and files_by_type[dt] is None:
+                files_by_type[dt] = f
+
+        sir_found = files_by_type["sir"] is not None
+        isp_found = files_by_type["isp"] is not None
+        report_exists = files_by_type["dd_report"] is not None
+
+        missing_docs: list[str] = []
+        if not sir_found:
+            missing_docs.append("sir")
+        if not isp_found:
+            missing_docs.append("isp")
+
+        ready_for_report = sir_found and isp_found and not report_exists
+
+        return {
+            "status": "success",
+            "site_title": site_title,
+            "sir_found": sir_found,
+            "isp_found": isp_found,
+            "report_exists": report_exists,
+            "missing_docs": missing_docs,
+            "ready_for_report": ready_for_report,
+            "files": files_by_type,
+            "drive_folder_url": drive_folder_url,
+            "message": (
+                f"Site '{site_title}': "
+                f"SIR={'✓' if sir_found else '✗'}, "
+                f"ISP={'✓' if isp_found else '✗'}, "
+                f"report={'exists' if report_exists else 'not yet created'}. "
+                f"{'Ready for report generation.' if ready_for_report else 'Not ready — ' + (', '.join(missing_docs) + ' missing.' if missing_docs else 'report already exists.')}"
+            ),
+        }
+
+    except Exception as e:
+        logger.error("check_site_readiness failed: %s", e)
+        return {
+            "status": "error",
+            "error": "check_site_readiness failed",
+            "message": str(e),
+        }
+
+
+@mcp.tool()
+async def check_report_completeness(doc_id: str) -> dict[str, Any]:
+    """Check a generated DD report Google Doc for unresolved placeholders and pending sections.
+
+    Reads the document text, scans for any remaining {{token}} patterns (unfilled
+    placeholders — hard block) and [Not found / Pending] gap labels (acceptable sourced gaps).
+
+    Args:
+        doc_id: Google Docs file ID of the generated DD report.
+
+    Returns:
+        Dict with ready_to_send flag, unresolved_token_count, unresolved_tokens list,
+        pending_section_count, pending_sections list, and a human-readable summary.
+    """
+    logger.info("Tool called: check_report_completeness — doc_id=%s", doc_id)
+
+    if not doc_id or not doc_id.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "doc_id must be a non-empty string",
+        }
+
+    try:
+        gc = _make_google_client()
+        text = gc.export_google_doc_as_text(doc_id)
+
+        # Find unresolved {{token}} patterns — these are hard blocks
+        unresolved_tokens = re.findall(r"\{\{([^}]+)\}\}", text)
+        unresolved_token_count = len(unresolved_tokens)
+
+        # Find all [Not found — ...] and [Pending...] labels
+        pending_labels = re.findall(r"\[(?:Not found[^]]*|Pending[^]]*)\]", text, re.IGNORECASE)
+        pending_section_count = len(pending_labels)
+
+        ready_to_send = unresolved_token_count == 0
+
+        if ready_to_send and pending_section_count == 0:
+            summary = "Report complete. All fields filled."
+        elif ready_to_send:
+            summary = (
+                f"Report complete. {pending_section_count} field(s) pending "
+                f"(data not yet available): {'; '.join(pending_labels[:5])}"
+                + (" ..." if len(pending_labels) > 5 else "")
+            )
+        else:
+            summary = (
+                f"Report NOT ready to send. {unresolved_token_count} unfilled placeholder(s): "
+                + ", ".join(f"{{{{{t}}}}}" for t in unresolved_tokens[:10])
+                + (" ..." if len(unresolved_tokens) > 10 else "")
+            )
+
+        return {
+            "status": "success",
+            "doc_id": doc_id,
+            "ready_to_send": ready_to_send,
+            "unresolved_token_count": unresolved_token_count,
+            "unresolved_tokens": unresolved_tokens,
+            "pending_section_count": pending_section_count,
+            "pending_sections": pending_labels,
+            "summary": summary,
+            "message": summary,
+        }
+
+    except Exception as e:
+        logger.error("check_report_completeness failed: %s", e)
+        return {
+            "status": "error",
+            "error": "check_report_completeness failed",
+            "message": str(e),
+        }
+
+
+@mcp.tool()
+async def send_dd_report_email(
+    site_name: str,
+    report_url: str,
+    key_findings: str,
+) -> dict[str, Any]:
+    """Send the completed DD report by email to the configured recipient list.
+
+    Reads DD_REPORT_EMAIL_RECIPIENTS from settings, builds an HTML email with the
+    report link and key findings summary, and sends via Gmail SMTP.
+
+    Args:
+        site_name: Site name for the email subject line.
+        report_url: URL of the generated DD report Google Doc.
+        key_findings: Short summary of key findings to include in the email body.
+
+    Returns:
+        Dict indicating success or error with recipient details.
+    """
+    logger.info("Tool called: send_dd_report_email — site=%s", site_name)
+
+    if not site_name or not report_url:
+        return {
+            "status": "error",
+            "error": "Missing parameters",
+            "message": "site_name and report_url are required",
+        }
+
+    settings = get_settings()
+
+    if not settings.email_sender or not settings.email_app_password:
+        return {
+            "status": "error",
+            "error": "Email not configured",
+            "message": "EMAIL_SENDER and EMAIL_APP_PASSWORD must be set.",
+        }
+
+    if not settings.dd_report_email_recipients:
+        return {
+            "status": "error",
+            "error": "No recipients configured",
+            "message": "DD_REPORT_EMAIL_RECIPIENTS must be set (comma-separated emails).",
+        }
+
+    recipients = [r.strip() for r in settings.dd_report_email_recipients.split(",") if r.strip()]
+
+    subject = f"DD Report Ready — {site_name}"
+    html_body = f"""
+<html><body>
+<h2>Due Diligence Report — {site_name}</h2>
+<p>A new Due Diligence report has been generated for <strong>{site_name}</strong>.</p>
+<p><a href="{report_url}" style="font-size:16px;font-weight:bold;">View Report in Google Docs</a></p>
+<h3>Key Findings</h3>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;">{key_findings}</pre>
+<p style="color:#888;font-size:12px;">Generated automatically by the Alpha DD Reporter.</p>
+</body></html>
+"""
+
+    try:
+        send_email(
+            sender=settings.email_sender,
+            app_password=settings.email_app_password,
+            recipients=recipients,
+            subject=subject,
+            html_body=html_body,
+        )
+        return {
+            "status": "success",
+            "recipients": recipients,
+            "subject": subject,
+            "message": f"Email sent to {len(recipients)} recipient(s): {', '.join(recipients)}",
+        }
+    except Exception as e:
+        logger.error("send_dd_report_email failed: %s", e)
+        return {
+            "status": "error",
+            "error": "Email send failed",
             "message": str(e),
         }
 
