@@ -41,6 +41,8 @@ TEMPLATE_TOKENS: list[str] = [
     "q1.ahj_building_dept",
     "q1.ahj_fire_dept",
     "q1.ibc_edition",
+    "q1.permits_required",
+    "q1.pre_app_meeting",
     "q1.health_dept_requirements",
     "q1.rating",
     "q1.state_school_registration",
@@ -121,6 +123,7 @@ TEMPLATE_TOKENS: list[str] = [
     "q4.ready_to_open_confidence",
     "q4.permit_timeline_weeks",
     "q4.pre_app_required",
+    "q4.schedule_risks",
     "q4.sequential_or_concurrent",
     "q4.opening_target_semester",
     # ── appendix ──────────────────────────────────────────────────────────
@@ -160,9 +163,7 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "q1.zoning":                  "q1.zoning_designation",
     "q1.ahj_contact":             "q1.ahj_building_dept",
     "q1.ahj":                     "q1.ahj_building_dept",
-    "q1.permits_required":        "q1.schools_permitted_as",
     "q1.permit_timeline":         "q4.permit_timeline_weeks",
-    "q1.pre_app_meeting":         "q4.pre_app_required",
     # ── Q2 variations ────────────────────────────────────────────────────
     "q2.building_overview":           "q2.scope_of_work",
     "q2.building_condition_summary":  "q2.scope_of_work",
@@ -194,7 +195,6 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "q4.milestone_schedule.regulatory_approval":  "q4.education_regulatory_date",
     "q4.milestone_schedule.co":                   "q4.co_date",
     "q4.milestone_schedule.ready_to_open":        "q4.ready_to_open_date",
-    "q4.schedule_risks":                          "q4.sequential_or_concurrent",
     "q4.timeline":                                "q4.permit_timeline_weeks",
     # ── appendix variations ──────────────────────────────────────────────
     "appendix.building_inspection_link":  "appendix.inspection_link",

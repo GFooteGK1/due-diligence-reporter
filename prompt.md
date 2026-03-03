@@ -371,6 +371,8 @@ You may pass keys as either:
 | `q1.schools_permitted_as` | How schools are permitted under this zoning | SIR |
 | `q1.ahj_building_dept` | AHJ building department name and contact | SIR |
 | `q1.ahj_fire_dept` | AHJ fire department name and contact | SIR |
+| `q1.permits_required` | Permits required (CUP, SUP, variance, change of use, etc.) | SIR |
+| `q1.pre_app_meeting` | Pre-application meeting requirement (yes/no + details) | SIR |
 | `q1.ibc_edition` | IBC edition enforced (e.g., "2021 IBC") | SIR |
 | `q1.health_dept_requirements` | Health department requirements for school use | SIR |
 | `q1.rating` | Overall Q1 rating (GREEN / YELLOW / RED) | Synthesize |
@@ -474,6 +476,7 @@ You may pass keys as either:
 | `q4.ready_to_open_confidence` | Confidence level for opening date | Overall assessment |
 | `q4.permit_timeline_weeks` | Permit timeline in weeks | SIR |
 | `q4.pre_app_required` | Whether pre-application meeting is required | SIR |
+| `q4.schedule_risks` | Schedule risk factors (permit delays, seasonal, regulatory) | SIR + building inspection |
 | `q4.sequential_or_concurrent` | Whether milestones are sequential or concurrent | Analysis |
 | `q4.opening_target_semester` | Target semester for school opening (e.g., "Fall 2027") | Estimate |
 
