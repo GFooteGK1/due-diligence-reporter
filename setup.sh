@@ -14,6 +14,14 @@ uv pip install -e . > /dev/null 2>&1
 # Create credentials directory
 mkdir -p credentials
 
+# Load .env file into shell environment (vars are in the file but not exported by default)
+if [ -f .env ]; then
+    echo "Loading .env into shell environment..." >&2
+    set -a
+    . ./.env
+    set +a
+fi
+
 # --- OAuth2 token setup ---
 # Priority 1: Build token from .env / environment variables (same method as cron workflows)
 # This uses the known-good refresh token from GitHub secrets.
