@@ -46,7 +46,7 @@ from due_diligence_reporter.report_pipeline import (
     process_site_pipeline,
 )
 from due_diligence_reporter.server import _build_site_match_terms
-from due_diligence_reporter.utils import post_google_chat_message
+from due_diligence_reporter.utils import post_google_chat_message, send_email
 from due_diligence_reporter.wrike import (
     _get_all_site_records,
     extract_address_from_record,
@@ -138,6 +138,38 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
             post_google_chat_message(settings.google_chat_webhook_url, summary)
         except Exception as e:
             logger.error("Failed to post Google Chat summary: %s", e)
+
+    # ── SIR arrival notifications ────────────────────────────────────────────
+    SIR_NOTIFICATION_RECIPIENTS = [
+        "jake.petersen@trilogy.com",
+        "joshua.rockers@trilogy.com",
+        "auth.permitting@trilogy.com",
+    ]
+
+    sir_uploads = [u for u in results.get("uploads", []) if u.get("doc_type") == "sir"]
+    if sir_uploads and settings.email_sender and settings.email_app_password:
+        for sir in sir_uploads:
+            site = sir.get("site_title", "Unknown Site")
+            drive_link = sir.get("drive_link", "")
+            filename = sir.get("drive_filename", sir.get("original_filename", ""))
+            html_body = f"""<html><body>
+<h2>SIR Received — {site}</h2>
+<p>A new Site Investigation Report has been uploaded for <strong>{site}</strong>.</p>
+<p><strong>File:</strong> {filename}</p>
+<p><a href="{drive_link}" style="font-size:16px;font-weight:bold;">View SIR in Google Drive</a></p>
+<p style="color:#888;font-size:12px;">Sent automatically by the Alpha DD Reporter inbox scanner.</p>
+</body></html>"""
+            try:
+                send_email(
+                    sender=settings.email_sender,
+                    app_password=settings.email_app_password,
+                    recipients=SIR_NOTIFICATION_RECIPIENTS,
+                    subject=f"SIR Received — {site}",
+                    html_body=html_body,
+                )
+                logger.info("SIR arrival email sent for '%s' to %s", site, SIR_NOTIFICATION_RECIPIENTS)
+            except Exception as e:
+                logger.error("Failed to send SIR arrival email for '%s': %s", site, e)
 
     # ── Phase 2: Pipeline for newly-uploaded sites ───────────────────────────
     if scan_only or dry_run:
