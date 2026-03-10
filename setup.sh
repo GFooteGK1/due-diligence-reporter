@@ -11,20 +11,54 @@ uv sync > /dev/null 2>&1
 echo "Installing due_diligence_reporter package..." >&2
 uv pip install -e . > /dev/null 2>&1
 
-# Setup OAuth2 configuration if platform variables are available
-if [ -n "$API_KEY" ] && [ -n "$API_BASE_URL" ] && [ -n "$HIVE_INSTANCE_ID" ]; then
-    echo "Fetching OAuth2 configuration..." >&2
+# Create credentials directory
+mkdir -p credentials
+
+# --- OAuth2 token setup ---
+# Priority 1: Build token from .env / environment variables (same method as cron workflows)
+# This uses the known-good refresh token from GitHub secrets.
+if [ -n "$OAUTH_REFRESH_TOKEN" ] && [ -n "$OAUTH_CLIENT_ID" ] && [ -n "$OAUTH_CLIENT_SECRET" ]; then
+    echo "Building OAuth2 token from environment variables..." >&2
+    python3 -c "
+import json, os
+data = {
+    'token': None,
+    'refresh_token': os.environ['OAUTH_REFRESH_TOKEN'],
+    'token_uri': 'https://oauth2.googleapis.com/token',
+    'client_id': os.environ['OAUTH_CLIENT_ID'],
+    'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+    'scopes': [
+        'https://www.googleapis.com/auth/drive',
+        'https://www.googleapis.com/auth/documents',
+        'https://www.googleapis.com/auth/gmail.modify',
+    ],
+}
+with open('.gcp-saved-tokens.json', 'w') as f:
+    json.dump(data, f, indent=2)
+
+# Also create client_secrets.json for compatibility
+secrets = {
+    'web': {
+        'client_id': os.environ['OAUTH_CLIENT_ID'],
+        'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+        'auth_uri': 'https://accounts.google.com/o/oauth2/v2/auth',
+        'token_uri': 'https://oauth2.googleapis.com/token',
+    }
+}
+with open('credentials/client_secrets.json', 'w') as f:
+    json.dump(secrets, f, indent=2)
+"
+    echo "OAuth2 credentials configured from environment variables" >&2
+
+# Priority 2: Fetch from MCP Hive platform (legacy fallback)
+elif [ -n "$API_KEY" ] && [ -n "$API_BASE_URL" ] && [ -n "$HIVE_INSTANCE_ID" ]; then
+    echo "Fetching OAuth2 configuration from MCP Hive..." >&2
 
     if curl -s -X GET "$API_BASE_URL/api/hive-instances/$HIVE_INSTANCE_ID/oauth2-config" \
         -H "x-api-key: $API_KEY" > oauth_response.json 2>&1; then
 
-        echo "Configuring OAuth2 credentials..." >&2
+        echo "Configuring OAuth2 credentials from MCP Hive..." >&2
 
-        # Create credentials directory if it doesn't exist
-        mkdir -p credentials
-
-        # Convert to Google OAuth2 authorized user format
-        # Must include token_uri and scopes so google-auth can refresh and validate correctly
         jq '{
           "client_id": .oauthKeys.client_id,
           "client_secret": .oauthKeys.client_secret,
@@ -39,15 +73,15 @@ if [ -n "$API_KEY" ] && [ -n "$API_BASE_URL" ] && [ -n "$HIVE_INSTANCE_ID" ]; th
           ]
         }' oauth_response.json > .gcp-saved-tokens.json
 
-        # Create client secrets in Google OAuth format
         jq '{"web": .oauthKeys}' oauth_response.json > credentials/client_secrets.json
 
-        echo "OAuth2 credentials configured successfully" >&2
-
+        echo "OAuth2 credentials configured from MCP Hive" >&2
         rm oauth_response.json
     else
         echo "OAuth2 configuration fetch failed, will use manual setup" >&2
     fi
+else
+    echo "No OAuth2 credentials found in environment — using existing token files" >&2
 fi
 
 echo "Setup complete!" >&2
