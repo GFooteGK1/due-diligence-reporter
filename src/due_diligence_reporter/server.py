@@ -21,7 +21,7 @@ from .utils import (
     extract_text_from_pdf_bytes,
     send_email,
 )
-from .wrike import build_site_summary, find_site_record
+from .wrike import build_site_summary, extract_p1_email_from_record, find_site_record
 
 # Load environment variables from the project-root .env if present
 load_dotenv()
@@ -1617,9 +1617,13 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
 
         ready_for_report = sir_found and isp_found and inspection_found and not report_exists
 
+        # Resolve P1 Assignee email from Wrike contact
+        p1_email = extract_p1_email_from_record(record)
+
         return {
             "status": "success",
             "site_title": site_title,
+            "p1_assignee_email": p1_email,
             "sir_found": sir_found,
             "isp_found": isp_found,
             "inspection_found": inspection_found,
@@ -1728,16 +1732,18 @@ async def send_dd_report_email(
     site_name: str,
     report_url: str,
     key_findings: str,
+    additional_recipients: str = "",
 ) -> dict[str, Any]:
-    """Send the completed DD report by email to the configured recipient list.
+    """Send the completed DD report by email.
 
-    Reads DD_REPORT_EMAIL_RECIPIENTS from settings, builds an HTML email with the
-    report link and key findings summary, and sends via Gmail SMTP.
+    Sends to the configured DD_REPORT_EMAIL_RECIPIENTS plus any additional
+    recipients (e.g., the P1 Assignee from Wrike). Duplicates are removed.
 
     Args:
         site_name: Site name for the email subject line.
         report_url: URL of the generated DD report Google Doc.
         key_findings: Short summary of key findings to include in the email body.
+        additional_recipients: Comma-separated email addresses to add (e.g., P1 Assignee).
 
     Returns:
         Dict indicating success or error with recipient details.
@@ -1760,14 +1766,30 @@ async def send_dd_report_email(
             "message": "EMAIL_SENDER and EMAIL_APP_PASSWORD must be set.",
         }
 
-    if not settings.dd_report_email_recipients:
+    # Build recipient list: configured recipients + additional (e.g., P1 Assignee)
+    base_recipients = [
+        r.strip() for r in settings.dd_report_email_recipients.split(",") if r.strip()
+    ] if settings.dd_report_email_recipients else []
+
+    extra_recipients = [
+        r.strip() for r in additional_recipients.split(",") if r.strip()
+    ] if additional_recipients else []
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    recipients: list[str] = []
+    for r in base_recipients + extra_recipients:
+        r_lower = r.lower()
+        if r_lower not in seen:
+            seen.add(r_lower)
+            recipients.append(r)
+
+    if not recipients:
         return {
             "status": "error",
-            "error": "No recipients configured",
-            "message": "DD_REPORT_EMAIL_RECIPIENTS must be set (comma-separated emails).",
+            "error": "No recipients",
+            "message": "No recipients configured and no additional_recipients provided.",
         }
-
-    recipients = [r.strip() for r in settings.dd_report_email_recipients.split(",") if r.strip()]
 
     subject = f"DD Report Ready — {site_name}"
     html_body = f"""

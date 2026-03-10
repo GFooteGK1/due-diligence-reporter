@@ -415,6 +415,7 @@ def process_site_pipeline(
     shared_cache: dict[str, list[dict[str, Any]]],
     system_prompt: str,
     settings: Settings,
+    p1_email: str | None = None,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -480,17 +481,19 @@ def process_site_pipeline(
             unresolved_tokens=unresolved,
         )
 
-    # 5. Send email
-    if (
-        settings.email_sender
-        and settings.email_app_password
-        and settings.dd_report_email_recipients
-    ):
-        recipients = [
+    # 5. Send email (to configured recipients + P1 Assignee)
+    if settings.email_sender and settings.email_app_password:
+        base_recipients = [
             r.strip()
             for r in settings.dd_report_email_recipients.split(",")
             if r.strip()
-        ]
+        ] if settings.dd_report_email_recipients else []
+
+        # Add P1 Assignee if available and not already in list
+        if p1_email and p1_email.lower() not in {r.lower() for r in base_recipients}:
+            base_recipients.append(p1_email)
+
+        recipients = base_recipients
         html_body = f"""
 <html><body>
 <h2>Due Diligence Report — {site_title}</h2>

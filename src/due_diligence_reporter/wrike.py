@@ -191,6 +191,52 @@ def extract_google_folder_from_record(record: dict[str, Any]) -> str | None:
     return None
 
 
+def get_contact_email(
+    contact_id: str, *, cfg: WrikeConfig | None = None
+) -> str | None:
+    """Resolve a Wrike contact ID to an email address via the Contacts API."""
+    if cfg is None:
+        cfg = load_wrike_config()
+
+    try:
+        resp = requests.get(
+            f"https://www.wrike.com/api/v4/contacts/{contact_id}",
+            headers=_wrike_headers(cfg.access_token),
+            timeout=15,
+        )
+        _raise_for_wrike_error(resp)
+        data = resp.json().get("data", [])
+        if data:
+            profiles = data[0].get("profiles", [])
+            if profiles:
+                return profiles[0].get("email")
+    except Exception as e:
+        logger.warning("Failed to resolve contact %s to email: %s", contact_id, e)
+
+    return None
+
+
+def extract_p1_email_from_record(
+    record: dict[str, Any], *, cfg: WrikeConfig | None = None
+) -> str | None:
+    """Extract the P1 Accountable person's email from a Wrike Site Record."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    p1_field_id = WRIKE_CUSTOM_FIELDS["p1_accountable"]
+
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("id") == p1_field_id:
+            contact_id = field.get("value", "")
+            if isinstance(contact_id, str) and contact_id.strip():
+                return get_contact_email(contact_id.strip(), cfg=cfg)
+
+    return None
+
+
 def extract_stage_from_record(record: dict[str, Any]) -> str | None:
     """Extract overall_site_stage from Wrike Site Record."""
     custom_fields = record.get("customFields", [])

@@ -360,7 +360,10 @@ Call `create_dd_report(site_name, drive_folder_url, report_data)` with the assem
 Call `check_report_completeness(doc_id)`. If any `{{token}}` placeholders remain, attempt to fill them. `[Not found — ...]` labels are acceptable and not blocking.
 
 ### Step 8 — Email the report
-**Always** call `send_dd_report_email(site_name, report_url, key_findings)` after the report is generated. Do not ask the user whether to send — the email is sent automatically as the final step. Include a brief summary of key findings and any missing documents in the email body.
+**Always** call `send_dd_report_email(site_name, report_url, key_findings, additional_recipients)` after the report is generated. Do not ask the user whether to send — the email is sent automatically as the final step.
+
+- Pass the `p1_assignee_email` from the Step 2 readiness check as `additional_recipients` so the P1 Assignee receives the report alongside the default recipients.
+- Include a brief summary of key findings and any missing documents in the `key_findings` body.
 
 ### Gap labels for missing documents
 If a document was not found in Step 2, use sourced gap labels for every field that would come from it:

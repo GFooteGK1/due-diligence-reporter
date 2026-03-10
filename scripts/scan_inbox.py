@@ -51,6 +51,7 @@ from due_diligence_reporter.wrike import (
     _get_all_site_records,
     extract_address_from_record,
     extract_google_folder_from_record,
+    extract_p1_email_from_record,
     load_wrike_config,
 )
 
@@ -179,11 +180,12 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
 
         address = extract_address_from_record(record)
         match_terms = _build_site_match_terms(site_title, address)
+        p1_email = extract_p1_email_from_record(record)
 
-        logger.info("Running pipeline for '%s' (match terms: %s)", site_title, match_terms)
+        logger.info("Running pipeline for '%s' (match terms: %s, p1: %s)", site_title, match_terms, p1_email)
         result = process_site_pipeline(
             gc, site_title, drive_folder_url, match_terms,
-            shared_cache, system_prompt, settings,
+            shared_cache, system_prompt, settings, p1_email=p1_email,
         )
 
         # Post each result to Google Chat
