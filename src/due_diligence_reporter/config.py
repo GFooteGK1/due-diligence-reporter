@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     # Google Chat
     google_chat_webhook_url: str = Field(
-        "", description="Google Chat incoming webhook URL for notifications"
+        "", description="Comma-separated Google Chat incoming webhook URLs for notifications"
     )
 
     # Inbox Scanner

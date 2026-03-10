@@ -532,8 +532,15 @@ def post_pipeline_result(
     result: PipelineResult,
     drive_folder_url: str = "",
 ) -> None:
-    """Post a Google Chat message summarizing a single PipelineResult."""
+    """Post a Google Chat message summarizing a single PipelineResult.
+
+    webhook_url can be a single URL or comma-separated URLs for multiple spaces.
+    """
     if not webhook_url:
+        return
+
+    urls = [u.strip() for u in webhook_url.split(",") if u.strip()]
+    if not urls:
         return
 
     if result.status == "waiting_on_docs":
@@ -586,7 +593,8 @@ def post_pipeline_result(
     else:
         msg = f"DD Check -- {result.site_title}\nStatus: {result.status}"
 
-    try:
-        post_google_chat_message(webhook_url, msg)
-    except Exception as e:
-        logger.error("Failed to post Chat message for '%s': %s", result.site_title, e)
+    for url in urls:
+        try:
+            post_google_chat_message(url, msg)
+        except Exception as e:
+            logger.error("Failed to post Chat message for '%s' to %s: %s", result.site_title, url[:60], e)
