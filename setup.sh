@@ -24,12 +24,19 @@ if [ -n "$API_KEY" ] && [ -n "$API_BASE_URL" ] && [ -n "$HIVE_INSTANCE_ID" ]; th
         mkdir -p credentials
 
         # Convert to Google OAuth2 authorized user format
+        # Must include token_uri and scopes so google-auth can refresh and validate correctly
         jq '{
           "client_id": .oauthKeys.client_id,
           "client_secret": .oauthKeys.client_secret,
           "refresh_token": .credentials.refresh_token,
           "token": .credentials.access_token,
-          "type": "authorized_user"
+          "token_uri": "https://oauth2.googleapis.com/token",
+          "type": "authorized_user",
+          "scopes": [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/gmail.modify"
+          ]
         }' oauth_response.json > .gcp-saved-tokens.json
 
         # Create client secrets in Google OAuth format

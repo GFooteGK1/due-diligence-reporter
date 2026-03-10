@@ -608,6 +608,30 @@ def _find_site_docs_in_shared_folders(
                 if any(needle in fname for needle in needles):
                     result[doc_type] = {**f, "doc_type": doc_type}
                     break
+
+            # For building_inspection: also search one level of subfolders
+            # (inspection photos are stored in per-city subfolders that may
+            # also contain a PDF report, e.g. the La Jolla subfolder).
+            if doc_type == "building_inspection" and result[doc_type] is None:
+                try:
+                    subfolders = gc.list_subfolders(folder_id)
+                    for subfolder in subfolders:
+                        sf_id = subfolder.get("id")
+                        if not sf_id:
+                            continue
+                        sf_files = gc.list_files_in_folder(sf_id)
+                        for f in sf_files:
+                            fname = f.get("name", "").lower()
+                            if any(needle in fname for needle in needles):
+                                result[doc_type] = {**f, "doc_type": doc_type}
+                                break
+                        if result[doc_type] is not None:
+                            break
+                except Exception as e:
+                    logger.warning(
+                        "Failed to search building_inspection subfolders: %s", e
+                    )
+
         except Exception as e:
             logger.warning(
                 "Failed to list shared %s folder (%s): %s", doc_type, folder_id, e
@@ -1604,14 +1628,17 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             "ready_for_report": ready_for_report,
             "files": files_by_type,
             "drive_folder_url": drive_folder_url,
-            "message": (
-                f"Site '{site_title}': "
-                f"SIR={'✓' if sir_found else '✗'}, "
-                f"ISP={'✓' if isp_found else '✗'}, "
-                f"Inspection={'✓' if inspection_found else '✗'}, "
-                f"report={'exists' if report_exists else 'not yet created'}. "
-                f"{'Ready for report generation.' if ready_for_report else 'Not ready — ' + (', '.join(missing_docs) + ' missing.' if missing_docs else 'report already exists.')}"
-            ),
+            "message": "\n".join([
+                f"Site '{site_title}' document readiness:",
+                f"  SIR: {'found — ' + (files_by_type.get('sir') or {}).get('name', '') if sir_found else 'not found'}",
+                f"  ISP: {'found — ' + (files_by_type.get('isp') or {}).get('name', '') if isp_found else 'not found'}",
+                f"  Building Inspection: {'found — ' + (files_by_type.get('building_inspection') or {}).get('name', '') if inspection_found else 'not found'}",
+                f"  DD Report: {'exists — ' + (files_by_type.get('dd_report') or {}).get('name', '') if report_exists else 'not yet created'}",
+                "",
+                "Ready for report generation." if ready_for_report else (
+                    "Not ready — " + ", ".join(missing_docs) + " missing." if missing_docs else "Report already exists."
+                ),
+            ]),
         }
 
     except Exception as e:
