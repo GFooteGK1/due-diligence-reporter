@@ -14,6 +14,9 @@ on:
           - 'false'
           - 'true'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   inbox-scan:
     runs-on: ubuntu-latest
