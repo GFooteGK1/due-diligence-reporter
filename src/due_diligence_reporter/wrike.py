@@ -237,6 +237,40 @@ def extract_p1_email_from_record(
     return None
 
 
+def _get_active_status_ids(*, access_token: str) -> set[str]:
+    """Fetch all Wrike workflows and return the set of customStatusIds in the 'Active' group."""
+    url = f"{WRIKE_API_BASE_URL}/workflows"
+    logger.info("Fetching Wrike workflows to resolve active status IDs")
+
+    resp = requests.get(
+        url,
+        headers=_wrike_headers(access_token),
+        timeout=WRIKE_TIMEOUT_SECONDS,
+    )
+    _raise_for_wrike_error(resp)
+
+    payload: dict[str, Any] = resp.json()
+    active_ids: set[str] = set()
+
+    for workflow in payload.get("data", []):
+        for status in workflow.get("customStatuses", []):
+            if status.get("group") == "Active":
+                status_id = status.get("id")
+                if isinstance(status_id, str):
+                    active_ids.add(status_id)
+
+    logger.info("Found %d active status IDs across all workflows", len(active_ids))
+    return active_ids
+
+
+def is_record_active(record: dict[str, Any], active_status_ids: set[str]) -> bool:
+    """Return True if the record's customStatusId belongs to the 'Active' status group."""
+    status_id = record.get("customStatusId")
+    if not isinstance(status_id, str):
+        return False
+    return status_id in active_status_ids
+
+
 def extract_stage_from_record(record: dict[str, Any]) -> str | None:
     """Extract overall_site_stage from Wrike Site Record."""
     custom_fields = record.get("customFields", [])

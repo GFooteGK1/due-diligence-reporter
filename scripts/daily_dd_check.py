@@ -43,11 +43,13 @@ from due_diligence_reporter.report_pipeline import (
 )
 from due_diligence_reporter.server import _build_site_match_terms
 from due_diligence_reporter.wrike import (
+    _get_active_status_ids,
     _get_all_site_records,
     extract_address_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
     extract_stage_from_record,
+    is_record_active,
     load_wrike_config,
 )
 
@@ -85,9 +87,10 @@ def main(site_filter: str | None = None) -> None:
         scopes=settings.google_scopes,
     )
 
-    # Fetch all Wrike site records
+    # Fetch all Wrike site records and active status IDs
     logger.info("Fetching all Wrike site records...")
     all_records = _get_all_site_records(cfg=wrike_cfg)
+    active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
     logger.info("Found %d site records", len(all_records))
 
     # Pre-fetch shared folder file lists once for all sites
@@ -102,7 +105,7 @@ def main(site_filter: str | None = None) -> None:
 
     results: list[PipelineResult] = []
 
-    skipped_stage = 0
+    skipped = 0
 
     for record in all_records:
         site_title = record.get("title", "Unknown")
@@ -110,11 +113,17 @@ def main(site_filter: str | None = None) -> None:
         if site_filter and site_filter.lower() not in site_title.lower():
             continue
 
+        # Only process sites with an active Wrike status
+        if not is_record_active(record, active_status_ids):
+            logger.debug("Skipping '%s' — status group is not Active", site_title)
+            skipped += 1
+            continue
+
         # Only process sites in active DD stages
         stage = extract_stage_from_record(record)
         if stage not in ACTIVE_STAGES:
             logger.debug("Skipping '%s' — stage '%s' not in active stages", site_title, stage)
-            skipped_stage += 1
+            skipped += 1
             continue
 
         drive_folder_url = extract_google_folder_from_record(record)
@@ -141,7 +150,7 @@ def main(site_filter: str | None = None) -> None:
 
     # Summary — use ASCII-safe markers to avoid encoding errors on Windows
     print("\n" + "=" * 60)
-    print(f"Daily DD Check -- {len(results)} sites processed, {skipped_stage} skipped (wrong stage)")
+    print(f"Daily DD Check -- {len(results)} sites processed, {skipped} skipped (inactive or wrong stage)")
     print("=" * 60)
     for r in results:
         if r.status == "report_created":
