@@ -19,8 +19,16 @@ uv.lock
 # Environment / secrets
 .env
 .gcp-saved-tokens.json
-credentials/client_secrets.json
+credentials/
 oauth_response.json
+
+# Claude Code
+.claude/
+
+# Sample reports / one-off artifacts
+*.docx
+*.zip
+*.png
 
 # Tool caches
 .ruff_cache/
