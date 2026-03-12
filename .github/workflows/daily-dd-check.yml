@@ -3,7 +3,13 @@ name: Daily DD Check
 on:
   schedule:
     - cron: '0 14 * * 1-5'  # 9 AM Central (UTC-5), Monday–Friday
-  workflow_dispatch:          # manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      site:
+        description: 'Filter to a single site (substring match on title). Leave blank for all sites.'
+        required: false
+        default: ''
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -120,7 +126,12 @@ jobs:
           echo "✅ Wrote .gcp-saved-tokens.json"
 
       - name: Run daily DD check
-        run: uv run python scripts/daily_dd_check.py
+        run: |
+          if [ -n "${{ inputs.site }}" ]; then
+            uv run python scripts/daily_dd_check.py --site "${{ inputs.site }}"
+          else
+            uv run python scripts/daily_dd_check.py
+          fi
 
       - name: Done
         run: echo "🎉 Daily DD check completed"
