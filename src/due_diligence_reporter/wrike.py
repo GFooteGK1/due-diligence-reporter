@@ -219,7 +219,11 @@ def get_contact_email(
 def extract_p1_email_from_record(
     record: dict[str, Any], *, cfg: WrikeConfig | None = None
 ) -> str | None:
-    """Extract the P1 Accountable person's email from a Wrike Site Record."""
+    """Extract the P1 Accountable person's email from a Wrike Site Record.
+
+    Handles both string and list values for the User-type custom field
+    (Wrike may return a single contact ID string or an array of IDs).
+    """
     custom_fields = record.get("customFields", [])
     if not isinstance(custom_fields, list):
         return None
@@ -230,9 +234,30 @@ def extract_p1_email_from_record(
         if not isinstance(field, dict):
             continue
         if field.get("id") == p1_field_id:
-            contact_id = field.get("value", "")
-            if isinstance(contact_id, str) and contact_id.strip():
-                return get_contact_email(contact_id.strip(), cfg=cfg)
+            value = field.get("value", "")
+            logger.info(
+                "P1 Accountable field found for '%s': value=%r (type=%s)",
+                record.get("title", "?"), value, type(value).__name__,
+            )
+
+            # Wrike User fields can be arrays of contact IDs
+            if isinstance(value, list):
+                for cid in value:
+                    if isinstance(cid, str) and cid.strip():
+                        email = get_contact_email(cid.strip(), cfg=cfg)
+                        if email:
+                            logger.info("Resolved P1 contact %s -> %s", cid, email)
+                            return email
+            elif isinstance(value, str) and value.strip():
+                email = get_contact_email(value.strip(), cfg=cfg)
+                if email:
+                    logger.info("Resolved P1 contact %s -> %s", value, email)
+                    return email
+
+            logger.warning(
+                "P1 Accountable field present but could not resolve email for '%s'",
+                record.get("title", "?"),
+            )
 
     return None
 

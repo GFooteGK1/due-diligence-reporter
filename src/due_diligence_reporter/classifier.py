@@ -1,0 +1,321 @@
+"""Tiered document classification and site-matching for DD pipeline.
+
+Tier 1: Regex keyword matching (free, instant)
+Tier 2: LLM filename classification via GPT-4o-mini (cheap, ~200ms)
+Tier 3: LLM content classification on first-page PDF text (moderate, ~2s)
+
+All LLM functions degrade gracefully — if OpenAI is unavailable the system
+falls back to regex-only behaviour.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from typing import Any
+
+logger = logging.getLogger("[classifier]")
+
+# Valid doc types returned by the classifier
+DOC_TYPES = frozenset({
+    "sir",
+    "isp",
+    "building_inspection",
+    "phase_i_esa",
+    "dd_report",
+    "matterport",
+    "unknown",
+})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tier 1 — regex keyword matching
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def classify_by_keywords(filename: str) -> tuple[str, float]:
+    """Classify a document by filename keywords.  Returns (doc_type, confidence)."""
+    name = filename.lower()
+
+    if "dd report" in name:
+        return "dd_report", 0.95
+    if "phase i" in name or "phase 1" in name or " esa" in name or name.startswith("esa"):
+        return "phase_i_esa", 0.95
+    if re.search(r"\bisp\b", name) or re.search(r"-isp(\.[^.]+)?$", name):
+        return "isp", 0.95
+    if re.search(r"\bsir\b", name):
+        return "sir", 0.95
+    if "inspection" in name:
+        return "building_inspection", 0.95
+    if "matterport" in name:
+        return "matterport", 0.95
+
+    return "unknown", 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tier 2 — LLM filename classification
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FILENAME_SYSTEM_PROMPT = """\
+You classify documents for an Alpha School due diligence workflow.
+Given only a filename (and optionally a site name for context), determine the document type.
+
+Types:
+- sir: Site Investigation Report (also called Site Inspection Report)
+- isp: Internet Service Provider report / availability report
+- building_inspection: Building Inspection Report or property condition report
+- phase_i_esa: Phase I Environmental Site Assessment
+- dd_report: Due Diligence Report (the final compiled report)
+- matterport: Matterport 3D scan or virtual tour
+- unknown: Cannot determine from filename
+
+Return ONLY a JSON object:
+{"doc_type": "<type>", "confidence": 0.0-1.0, "reasoning": "brief explanation"}
+"""
+
+
+def classify_by_filename_llm(
+    filename: str, site_name: str | None = None
+) -> tuple[str, float]:
+    """Classify a document by sending its filename to GPT-4o-mini."""
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        logger.debug("OPENAI_API_KEY not set — skipping Tier 2 classification")
+        return "unknown", 0.0
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=openai_api_key)
+
+        user_msg = f"Filename: {filename}"
+        if site_name:
+            user_msg += f"\nSite name: {site_name}"
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _FILENAME_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        text = response.choices[0].message.content
+        if not text:
+            return "unknown", 0.0
+
+        result = json.loads(text)
+        doc_type = result.get("doc_type", "unknown")
+        confidence = float(result.get("confidence", 0.0))
+
+        if doc_type not in DOC_TYPES:
+            doc_type = "unknown"
+
+        logger.info(
+            "Tier 2 classified '%s' as %s (%.2f): %s",
+            filename, doc_type, confidence, result.get("reasoning", ""),
+        )
+        return doc_type, confidence
+
+    except Exception as e:
+        logger.warning("Tier 2 LLM classification failed for '%s': %s", filename, e)
+        return "unknown", 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tier 3 — LLM content classification (first page of PDF)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CONTENT_SYSTEM_PROMPT = """\
+You classify documents for an Alpha School due diligence workflow.
+You are given the first page text of a PDF and its filename. Determine the document type.
+
+Types:
+- sir: Site Investigation Report — covers zoning, permits, AHJ info, building code
+- isp: Internet Service Provider report — lists ISPs, speeds, availability
+- building_inspection: Building Inspection Report — covers building condition, systems, deficiencies
+- phase_i_esa: Phase I Environmental Site Assessment — environmental contamination, tanks, hazards
+- dd_report: Due Diligence Report — the final compiled report with executive summary
+- matterport: Matterport 3D scan documentation
+- unknown: Cannot determine
+
+Return ONLY a JSON object:
+{"doc_type": "<type>", "confidence": 0.0-1.0, "reasoning": "brief explanation"}
+"""
+
+
+def classify_by_content_llm(
+    first_page_text: str, filename: str
+) -> tuple[str, float]:
+    """Classify a document by sending its first-page text to GPT-4o-mini."""
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        return "unknown", 0.0
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=openai_api_key)
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _CONTENT_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Filename: {filename}\n\nFirst page text:\n{first_page_text[:3000]}"},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        text = response.choices[0].message.content
+        if not text:
+            return "unknown", 0.0
+
+        result = json.loads(text)
+        doc_type = result.get("doc_type", "unknown")
+        confidence = float(result.get("confidence", 0.0))
+
+        if doc_type not in DOC_TYPES:
+            doc_type = "unknown"
+
+        logger.info(
+            "Tier 3 classified '%s' as %s (%.2f): %s",
+            filename, doc_type, confidence, result.get("reasoning", ""),
+        )
+        return doc_type, confidence
+
+    except Exception as e:
+        logger.warning("Tier 3 LLM content classification failed for '%s': %s", filename, e)
+        return "unknown", 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestrator — runs tiers in order
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def classify_document(
+    filename: str,
+    *,
+    file_id: str | None = None,
+    gc: Any | None = None,
+    site_name: str | None = None,
+) -> tuple[str, float]:
+    """Classify a document using the three-tier strategy.
+
+    Tier 1 (regex) → Tier 2 (LLM filename) → Tier 3 (LLM content, PDF only).
+    Returns (doc_type, confidence).
+    """
+    # Tier 1: regex
+    doc_type, conf = classify_by_keywords(filename)
+    if doc_type != "unknown":
+        return doc_type, conf
+
+    # Tier 2: LLM on filename
+    doc_type, conf = classify_by_filename_llm(filename, site_name)
+    if conf >= 0.7:
+        return doc_type, conf
+
+    # Tier 3: LLM on content (PDF only, requires gc + file_id)
+    if file_id and gc and filename.lower().endswith(".pdf"):
+        try:
+            from .utils import extract_text_from_pdf_bytes
+
+            pdf_bytes = gc.download_file_bytes(file_id)
+            text = extract_text_from_pdf_bytes(pdf_bytes)
+            if text.strip():
+                doc_type, conf = classify_by_content_llm(text[:3000], filename)
+                if conf >= 0.5:
+                    return doc_type, conf
+        except Exception as e:
+            logger.warning("Tier 3 PDF extraction failed for '%s': %s", filename, e)
+
+    return "unknown", 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM site-matching for shared folders
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SITE_MATCH_SYSTEM_PROMPT = """\
+You match documents to Alpha School site records.
+Alpha School sites follow the naming pattern "Alpha {CityName}" (e.g. "Alpha Keller", "Alpha Boca Raton").
+
+Given a site name, address, and a list of filenames in a shared folder, determine which
+files (if any) belong to that site. Consider:
+- City names, abbreviations, alternate spellings
+- Address fragments, zip codes
+- Partial site name matches
+- The site name might not appear literally in the filename
+
+Return ONLY a JSON object:
+{"matches": [{"filename": "...", "confidence": 0.0-1.0}]}
+
+Only include files with confidence >= 0.7. If no files match, return {"matches": []}.
+"""
+
+
+def match_file_to_site_llm(
+    filenames: list[str],
+    site_title: str,
+    site_address: str | None = None,
+) -> dict[str, float]:
+    """Ask GPT-4o-mini which filenames belong to a given site.
+
+    Returns a dict of {filename: confidence} for matches with confidence >= 0.7.
+    """
+    if not filenames:
+        return {}
+
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        return {}
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=openai_api_key)
+
+        user_msg = f"Site name: {site_title}\n"
+        if site_address:
+            user_msg += f"Address: {site_address}\n"
+        user_msg += f"\nFilenames in folder:\n"
+        for fn in filenames:
+            user_msg += f"- {fn}\n"
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _SITE_MATCH_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        text = response.choices[0].message.content
+        if not text:
+            return {}
+
+        result = json.loads(text)
+        matches: dict[str, float] = {}
+        for m in result.get("matches", []):
+            fn = m.get("filename", "")
+            conf = float(m.get("confidence", 0.0))
+            if fn and conf >= 0.7:
+                matches[fn] = conf
+
+        if matches:
+            logger.info(
+                "LLM site-match for '%s': %s",
+                site_title,
+                {k: f"{v:.2f}" for k, v in matches.items()},
+            )
+
+        return matches
+
+    except Exception as e:
+        logger.warning("LLM site-match failed for '%s': %s", site_title, e)
+        return {}

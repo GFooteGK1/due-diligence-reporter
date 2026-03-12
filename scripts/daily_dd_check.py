@@ -139,7 +139,8 @@ def main(site_filter: str | None = None) -> None:
 
         result = process_site_pipeline(
             gc, site_title, drive_folder_url, match_terms,
-            shared_cache, system_prompt, settings, p1_email=p1_email,
+            shared_cache, system_prompt, settings,
+            p1_email=p1_email, site_address=address,
         )
         results.append(result)
 

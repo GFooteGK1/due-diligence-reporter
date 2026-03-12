@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 from mcp.server import FastMCP
 
+from .classifier import classify_by_keywords, classify_document, match_file_to_site_llm
 from .config import get_settings
 from .google_client import GoogleClient
 from .report_schema import normalize_report_data
@@ -45,9 +46,6 @@ GOOGLE_DOCS_MIME = "application/vnd.google-apps.document"
 GOOGLE_SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 # MIME type for PDF
 PDF_MIME = "application/pdf"
-# Name of the due diligence subfolder inside every site Drive folder
-DUE_DILIGENCE_SUBFOLDER = "01_Due Diligence"
-
 # Google Workspace MIME types that can be exported as plain text
 EXPORTABLE_MIME_TYPES: set[str] = {
     GOOGLE_DOCS_MIME,
@@ -441,38 +439,11 @@ def _call_pricing_api(
 def _classify_document_type(filename: str) -> str:
     """Classify a Drive file by its document type based on the filename.
 
-    Uses case-insensitive keyword matching. More specific patterns are checked first.
-
-    Returns one of: "isp", "sir", "building_inspection", "phase_i_esa",
-    "matterport", "dd_report", or "unknown".
+    Thin wrapper around :func:`classifier.classify_by_keywords` for backward
+    compatibility.  Returns only the doc_type string (no confidence).
     """
-    name = filename.lower()
-
-    # DD Report — check before other patterns
-    if "dd report" in name:
-        return "dd_report"
-
-    # Phase I ESA — check before "inspection" to avoid false matches
-    if "phase i" in name or "phase 1" in name or " esa" in name or name.startswith("esa"):
-        return "phase_i_esa"
-
-    # ISP — word boundary match, or filename ends with "-ISP" (before extension)
-    if re.search(r"\bisp\b", name) or re.search(r"-isp(\.[^.]+)?$", name):
-        return "isp"
-
-    # SIR — word boundary match
-    if re.search(r"\bsir\b", name):
-        return "sir"
-
-    # Building inspection
-    if "inspection" in name:
-        return "building_inspection"
-
-    # Matterport
-    if "matterport" in name:
-        return "matterport"
-
-    return "unknown"
+    doc_type, _ = classify_by_keywords(filename)
+    return doc_type
 
 
 def _extract_city_from_address(address: str | None) -> str | None:
@@ -574,12 +545,15 @@ def _build_site_match_terms(
 def _find_site_docs_in_shared_folders(
     gc: GoogleClient,
     match_terms: list[str],
+    *,
+    site_title: str | None = None,
+    site_address: str | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Search the three shared Drive folders (SIR, ISP, Building Inspection) for docs matching a site.
 
-    Matches files whose name contains ANY of the *match_terms* as a
-    case-insensitive substring.  Use :func:`_build_site_match_terms` to build
-    the term list from a site title and address.
+    **Pass 1** — substring match on filenames (free, instant).
+    **Pass 2** — for any missing doc types, ask GPT-4o-mini to match unmatched
+    filenames against the site (handles non-standard naming).
 
     Returns ``{"sir": file_dict|None, "isp": file_dict|None, "building_inspection": file_dict|None}``.
     """
@@ -598,44 +572,56 @@ def _find_site_docs_in_shared_folders(
 
     needles = [t.lower() for t in match_terms if t]
 
+    # Keep track of all files per folder for the LLM fallback pass
+    all_files_by_type: dict[str, list[dict[str, Any]]] = {}
+
     for doc_type, folder_id in folder_map.items():
         if not folder_id:
             continue
         try:
-            files = gc.list_files_in_folder(folder_id)
+            # Use recursive listing (building inspection has subfolders)
+            if doc_type == "building_inspection":
+                files = gc.list_files_recursive(folder_id, max_depth=1)
+            else:
+                files = gc.list_files_in_folder(folder_id)
+
+            all_files_by_type[doc_type] = files
+
+            # Pass 1: substring match
             for f in files:
                 fname = f.get("name", "").lower()
                 if any(needle in fname for needle in needles):
                     result[doc_type] = {**f, "doc_type": doc_type}
                     break
 
-            # For building_inspection: also search one level of subfolders
-            # (inspection photos are stored in per-city subfolders that may
-            # also contain a PDF report, e.g. the La Jolla subfolder).
-            if doc_type == "building_inspection" and result[doc_type] is None:
-                try:
-                    subfolders = gc.list_subfolders(folder_id)
-                    for subfolder in subfolders:
-                        sf_id = subfolder.get("id")
-                        if not sf_id:
-                            continue
-                        sf_files = gc.list_files_in_folder(sf_id)
-                        for f in sf_files:
-                            fname = f.get("name", "").lower()
-                            if any(needle in fname for needle in needles):
-                                result[doc_type] = {**f, "doc_type": doc_type}
-                                break
-                        if result[doc_type] is not None:
-                            break
-                except Exception as e:
-                    logger.warning(
-                        "Failed to search building_inspection subfolders: %s", e
-                    )
-
         except Exception as e:
             logger.warning(
                 "Failed to list shared %s folder (%s): %s", doc_type, folder_id, e
             )
+
+    # Pass 2: LLM site-matching for missing doc types
+    if site_title:
+        for doc_type in ["sir", "isp", "building_inspection"]:
+            if result[doc_type] is not None:
+                continue
+            files = all_files_by_type.get(doc_type, [])
+            if not files:
+                continue
+
+            filenames = [f.get("name", "") for f in files if f.get("name")]
+            llm_matches = match_file_to_site_llm(filenames, site_title, site_address)
+
+            if llm_matches:
+                # Pick highest confidence match
+                best_fn = max(llm_matches, key=llm_matches.get)  # type: ignore[arg-type]
+                for f in files:
+                    if f.get("name") == best_fn:
+                        result[doc_type] = {**f, "doc_type": doc_type}
+                        logger.info(
+                            "LLM matched '%s' to site '%s' for %s (conf=%.2f)",
+                            best_fn, site_title, doc_type, llm_matches[best_fn],
+                        )
+                        break
 
     return result
 
@@ -717,12 +703,13 @@ async def get_site_record(site_name_or_id: str) -> dict[str, Any]:
 async def list_drive_documents(
     drive_folder_url: str, site_name: str = ""
 ) -> dict[str, Any]:
-    """List all files in the site's Google Drive folder and its 01_Due Diligence subfolder.
+    """List all files in the site's Google Drive folder (recursive) and shared folders.
 
-    Also searches the shared SIR, ISP, and Building Inspection folders when
-    *site_name* is provided.  Returns file name, ID, MIME type, modified date,
-    and doc_type classification for each file found.  Use the returned file IDs
-    and names with read_drive_document to read content.
+    Searches the site folder and all subfolders (up to 2 levels deep), plus the
+    shared SIR, ISP, and Building Inspection folders when *site_name* is provided.
+    Returns file name, ID, MIME type, modified date, and doc_type classification
+    for each file found.  Use the returned file IDs and names with
+    read_drive_document to read content.
 
     Args:
         drive_folder_url: Google Drive folder URL (from the site's Wrike record).
@@ -731,8 +718,7 @@ async def list_drive_documents(
             results.
 
     Returns:
-        Dict with lists of files found in the root folder, DD subfolder, and
-        shared folders.
+        Dict with lists of files found in the site folder and shared folders.
     """
     logger.info("Tool called: list_drive_documents")
     logger.info(
@@ -762,43 +748,30 @@ async def list_drive_documents(
     try:
         gc = _make_google_client()
 
-        # List files in root folder
-        root_files_raw = gc.list_files_in_folder(folder_id)
-        root_files = [
+        # List all files in the site folder recursively (root + all subfolders)
+        all_site_files_raw = gc.list_files_recursive(folder_id, max_depth=2)
+        site_files = [
             {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-            for f in root_files_raw
+            for f in all_site_files_raw
         ]
-        logger.info("Found %d files in root folder %s", len(root_files), folder_id)
-
-        # Find and list files in 01_Due Diligence subfolder
-        dd_subfolder = gc.find_subfolder_by_name(folder_id, DUE_DILIGENCE_SUBFOLDER)
-        dd_files: list[dict[str, Any]] = []
-        dd_subfolder_id: str | None = None
-
-        if dd_subfolder:
-            dd_subfolder_id = dd_subfolder.get("id")
-            if dd_subfolder_id:
-                dd_files_raw = gc.list_files_in_folder(dd_subfolder_id)
-                dd_files = [
-                    {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-                    for f in dd_files_raw
-                ]
-                logger.info(
-                    "Found %d files in %s subfolder", len(dd_files), DUE_DILIGENCE_SUBFOLDER
-                )
-        else:
-            logger.info("No %s subfolder found", DUE_DILIGENCE_SUBFOLDER)
+        logger.info(
+            "Found %d files in site folder (recursive, max_depth=2) %s",
+            len(site_files), folder_id,
+        )
 
         # Search shared folders if site_name was provided
         shared_folder_files: list[dict[str, Any]] = []
+        address: str | None = None
         if site_name.strip():
             record = find_site_record(site_name_or_id=site_name)
-            address: str | None = None
             if record:
                 summary = build_site_summary(record)
                 address = summary.get("address")
             match_terms = _build_site_match_terms(site_name.strip(), address)
-            shared_docs = _find_site_docs_in_shared_folders(gc, match_terms)
+            shared_docs = _find_site_docs_in_shared_folders(
+                gc, match_terms,
+                site_title=site_name.strip(), site_address=address,
+            )
             for doc_type, doc in shared_docs.items():
                 if doc is not None:
                     shared_folder_files.append(doc)
@@ -809,20 +782,17 @@ async def list_drive_documents(
                     site_name,
                 )
 
-        total_files = len(root_files) + len(dd_files) + len(shared_folder_files)
+        total_files = len(site_files) + len(shared_folder_files)
 
         return {
             "status": "success",
             "folder_id": folder_id,
             "drive_folder_url": drive_folder_url,
-            "root_folder_files": root_files,
-            "due_diligence_subfolder_id": dd_subfolder_id,
-            "due_diligence_files": dd_files,
+            "site_folder_files": site_files,
             "shared_folder_files": shared_folder_files,
             "total_file_count": total_files,
             "message": (
-                f"Found {len(root_files)} files in root folder, "
-                f"{len(dd_files)} files in {DUE_DILIGENCE_SUBFOLDER} subfolder, "
+                f"Found {len(site_files)} files in site folder (recursive), "
                 f"and {len(shared_folder_files)} files in shared folders "
                 f"({total_files} total)"
             ),
@@ -1569,25 +1539,16 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
         # 1. Search the three shared folders (SIR/, ISP/, Building Inspection/)
         match_terms = _build_site_match_terms(site_title, address)
         logger.info("Match terms for '%s': %s", site_title, match_terms)
-        shared_docs = _find_site_docs_in_shared_folders(gc, match_terms)
+        shared_docs = _find_site_docs_in_shared_folders(
+            gc, match_terms,
+            site_title=site_title, site_address=address,
+        )
 
-        # 2. List + classify files in the site's own folder (fallback)
-        root_files = [
+        # 2. Recursively list + classify files in the site's own folder (fallback)
+        all_site_files = [
             {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-            for f in gc.list_files_in_folder(folder_id)
+            for f in gc.list_files_recursive(folder_id, max_depth=2)
         ]
-
-        dd_files: list[dict[str, Any]] = []
-        dd_subfolder = gc.find_subfolder_by_name(folder_id, DUE_DILIGENCE_SUBFOLDER)
-        if dd_subfolder:
-            dd_subfolder_id = dd_subfolder.get("id")
-            if dd_subfolder_id:
-                dd_files = [
-                    {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-                    for f in gc.list_files_in_folder(dd_subfolder_id)
-                ]
-
-        all_site_files = root_files + dd_files
 
         # 3. Build files_by_type — shared folders take priority, site folder fills gaps
         files_by_type: dict[str, dict[str, Any] | None] = {
@@ -1601,6 +1562,30 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             dt = f.get("doc_type", "unknown")
             if dt in files_by_type and files_by_type[dt] is None:
                 files_by_type[dt] = f
+
+        # 4. LLM classification for unknown site folder files if docs are still missing
+        still_missing = [
+            k for k in ("sir", "isp", "building_inspection")
+            if files_by_type[k] is None
+        ]
+        if still_missing:
+            unknown_files = [f for f in all_site_files if f.get("doc_type") == "unknown"]
+            for f in unknown_files:
+                fname = f.get("name", "")
+                fid = f.get("id")
+                doc_type, conf = classify_document(
+                    fname, file_id=fid, gc=gc, site_name=site_title,
+                )
+                if doc_type in still_missing and files_by_type.get(doc_type) is None:
+                    f["doc_type"] = doc_type
+                    files_by_type[doc_type] = f
+                    still_missing.remove(doc_type)
+                    logger.info(
+                        "LLM classified site file '%s' as %s (conf=%.2f) for '%s'",
+                        fname, doc_type, conf, site_title,
+                    )
+                if not still_missing:
+                    break
 
         sir_found = files_by_type["sir"] is not None
         isp_found = files_by_type["isp"] is not None

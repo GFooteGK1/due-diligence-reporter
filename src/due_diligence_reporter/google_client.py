@@ -171,6 +171,41 @@ class GoogleClient:
             logger.error("Failed to list subfolders: %s", error)
             raise RuntimeError(f"Failed to list subfolders: {error}") from error
 
+    def list_files_recursive(
+        self, folder_id: str, *, max_depth: int = 3
+    ) -> list[dict[str, Any]]:
+        """List all files recursively under a Drive folder, up to *max_depth* levels.
+
+        Each returned file dict includes a ``folder_path`` key indicating its
+        location relative to the root folder (e.g. ``"/Subfolder A"``).
+        """
+        all_files: list[dict[str, Any]] = []
+
+        def _walk(fid: str, depth: int, path: str) -> None:
+            files = self.list_files_in_folder(fid)
+            for f in files:
+                f["folder_path"] = path
+            all_files.extend(files)
+
+            if depth < max_depth:
+                try:
+                    subfolders = self.list_subfolders(fid)
+                except Exception as e:
+                    logger.warning("Failed to list subfolders of %s: %s", fid, e)
+                    return
+                for sf in subfolders:
+                    sf_id = sf.get("id")
+                    sf_name = sf.get("name", "")
+                    if sf_id:
+                        _walk(sf_id, depth + 1, f"{path}/{sf_name}")
+
+        _walk(folder_id, 0, "")
+        logger.info(
+            "Recursive listing of %s found %d files (max_depth=%d)",
+            folder_id, len(all_files), max_depth,
+        )
+        return all_files
+
     def find_subfolder_by_name(
         self, parent_id: str, subfolder_name: str
     ) -> dict[str, Any] | None:

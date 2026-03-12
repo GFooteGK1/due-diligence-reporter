@@ -240,7 +240,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         logger.info("Running pipeline for '%s' (match terms: %s, p1: %s)", site_title, match_terms, p1_email)
         result = process_site_pipeline(
             gc, site_title, drive_folder_url, match_terms,
-            shared_cache, system_prompt, settings, p1_email=p1_email,
+            shared_cache, system_prompt, settings,
+            p1_email=p1_email, site_address=address,
         )
 
         # Post each result to Google Chat

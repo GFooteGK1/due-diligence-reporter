@@ -16,8 +16,8 @@ import anthropic
 
 from .config import Settings, get_settings
 from .google_client import GoogleClient
+from .classifier import classify_document, match_file_to_site_llm
 from .server import (
-    DUE_DILIGENCE_SUBFOLDER,
     _build_site_match_terms,
     _classify_document_type,
 )
@@ -218,20 +218,51 @@ def list_shared_folders_once(
 def match_site_in_shared_cache(
     match_terms: list[str],
     shared_cache: dict[str, list[dict[str, Any]]],
+    *,
+    site_title: str | None = None,
+    site_address: str | None = None,
 ) -> dict[str, dict[str, Any] | None]:
-    """Find docs matching any of *match_terms* in the pre-fetched shared folder file lists."""
+    """Find docs matching any of *match_terms* in the pre-fetched shared folder file lists.
+
+    Pass 1: substring match (free).
+    Pass 2: LLM site-match for missing doc types (when *site_title* is provided).
+    """
     needles = [t.lower() for t in match_terms if t]
     result: dict[str, dict[str, Any] | None] = {
         "sir": None,
         "isp": None,
         "building_inspection": None,
     }
+
+    # Pass 1: substring match
     for doc_type, files in shared_cache.items():
         for f in files:
             fname = f.get("name", "").lower()
             if any(needle in fname for needle in needles):
                 result[doc_type] = {**f, "doc_type": doc_type}
                 break
+
+    # Pass 2: LLM fallback for missing doc types
+    if site_title:
+        for doc_type in ["sir", "isp", "building_inspection"]:
+            if result[doc_type] is not None:
+                continue
+            files = shared_cache.get(doc_type, [])
+            if not files:
+                continue
+            filenames = [f.get("name", "") for f in files if f.get("name")]
+            llm_matches = match_file_to_site_llm(filenames, site_title, site_address)
+            if llm_matches:
+                best_fn = max(llm_matches, key=llm_matches.get)  # type: ignore[arg-type]
+                for f in files:
+                    if f.get("name") == best_fn:
+                        result[doc_type] = {**f, "doc_type": doc_type}
+                        logger.info(
+                            "LLM cache-match: '%s' -> '%s' for %s (conf=%.2f)",
+                            best_fn, site_title, doc_type, llm_matches[best_fn],
+                        )
+                        break
+
     return result
 
 
@@ -245,6 +276,9 @@ def check_site_readiness_direct(
     drive_folder_url: str,
     match_terms: list[str],
     shared_cache: dict[str, list[dict[str, Any]]],
+    *,
+    site_title: str | None = None,
+    site_address: str | None = None,
 ) -> dict[str, Any]:
     """Check site document readiness directly without going through MCP."""
     folder_id = extract_folder_id_from_url(drive_folder_url)
@@ -254,26 +288,17 @@ def check_site_readiness_direct(
             "report_exists": False, "error": "bad_url",
         }
 
-    # 1. Match docs from pre-fetched shared folder cache
-    shared_docs = match_site_in_shared_cache(match_terms, shared_cache)
+    # 1. Match docs from pre-fetched shared folder cache (substring + LLM fallback)
+    shared_docs = match_site_in_shared_cache(
+        match_terms, shared_cache,
+        site_title=site_title, site_address=site_address,
+    )
 
-    # 2. List + classify site's own folder (fallback)
-    root_files = [
+    # 2. Recursively list + classify files in the site's own folder (all subfolders)
+    all_site_files = [
         {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-        for f in gc.list_files_in_folder(folder_id)
+        for f in gc.list_files_recursive(folder_id, max_depth=2)
     ]
-
-    dd_files: list[dict[str, Any]] = []
-    dd_subfolder = gc.find_subfolder_by_name(folder_id, DUE_DILIGENCE_SUBFOLDER)
-    if dd_subfolder:
-        dd_sub_id = dd_subfolder.get("id")
-        if dd_sub_id:
-            dd_files = [
-                {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-                for f in gc.list_files_in_folder(dd_sub_id)
-            ]
-
-    all_site_files = root_files + dd_files
 
     # 3. Merge — shared folders take priority, site folder fills gaps
     files_by_type: dict[str, dict[str, Any] | None] = {
@@ -286,6 +311,30 @@ def check_site_readiness_direct(
         dt = f.get("doc_type", "unknown")
         if dt in files_by_type and files_by_type[dt] is None:
             files_by_type[dt] = f
+
+    # 4. LLM classification for unknown site files if docs are still missing
+    still_missing = [
+        k for k in ("sir", "isp", "building_inspection")
+        if files_by_type[k] is None
+    ]
+    if still_missing:
+        unknown_files = [f for f in all_site_files if f.get("doc_type") == "unknown"]
+        for f in unknown_files:
+            fname = f.get("name", "")
+            fid = f.get("id")
+            doc_type, conf = classify_document(
+                fname, file_id=fid, gc=gc, site_name=site_title,
+            )
+            if doc_type in still_missing and files_by_type.get(doc_type) is None:
+                f["doc_type"] = doc_type
+                files_by_type[doc_type] = f
+                still_missing.remove(doc_type)
+                logger.info(
+                    "LLM classified '%s' as %s (conf=%.2f) for '%s'",
+                    fname, doc_type, conf, site_title,
+                )
+            if not still_missing:
+                break
 
     return {
         "sir_found": files_by_type["sir"] is not None,
@@ -416,6 +465,7 @@ def process_site_pipeline(
     system_prompt: str,
     settings: Settings,
     p1_email: str | None = None,
+    site_address: str | None = None,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -426,7 +476,10 @@ def process_site_pipeline(
 
     # 1. Check readiness
     try:
-        readiness = check_site_readiness_direct(gc, drive_folder_url, match_terms, shared_cache)
+        readiness = check_site_readiness_direct(
+            gc, drive_folder_url, match_terms, shared_cache,
+            site_title=site_title, site_address=site_address,
+        )
     except Exception as e:
         logger.error("Failed to check readiness for '%s': %s", site_title, e)
         return PipelineResult(site_title=site_title, status="error", error=str(e))
