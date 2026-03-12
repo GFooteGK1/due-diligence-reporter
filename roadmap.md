@@ -2,7 +2,7 @@
 
 ## Status: Active Development
 
-Last updated: 03/02/2026
+Last updated: 03/12/2026
 
 ---
 
@@ -21,6 +21,31 @@ Last updated: 03/02/2026
   - List formatting rule (newline-separated strings)
   - 6 q4.*_confidence fields added to schema
   - utils.py list join `", "` → `"\n"`
+- [x] **Wrike stage + status filtering (03/12/2026):**
+  - Daily cron and inbox scanner pipeline phase now filter by Wrike active status group and stages 1–2
+  - `_get_active_status_ids()` fetches workflow metadata to resolve active `customStatusId` values
+  - Records without a `customStatusId` default to active (safe fallback)
+- [x] **Tiered LLM document classification (03/12/2026):**
+  - New `classifier.py` module: Tier 1 (regex keywords) → Tier 2 (GPT-4o-mini on filename) → Tier 3 (GPT-4o-mini on first-page PDF content)
+  - LLM site-matching for shared folders: `match_file_to_site_llm()` handles non-standard filenames
+  - Graceful degradation — falls back to regex-only if OpenAI is unavailable
+  - Validated: correctly classified `zoning proof email chain.pdf` as SIR via Tier 3 content analysis
+- [x] **Recursive folder search (03/12/2026):**
+  - New `GoogleClient.list_files_recursive()` walks subfolders up to configurable depth
+  - Replaced hardcoded `01_Due Diligence` subfolder with recursive search (max depth 2)
+  - Older sites with non-standard folder structures are now fully searched
+- [x] **P1 Accountable email fix (03/12/2026):**
+  - `extract_p1_email_from_record()` now handles both string and list contact ID values
+  - Added logging for P1 field resolution (field value, type, resolved email)
+  - Validated: Bethesda P1 resolved to `robbie.forrest@trilogy.com`
+- [x] **Email recipient update (03/12/2026):**
+  - `DD_REPORT_EMAIL_RECIPIENTS` secret updated to `jc.fischer@trilogy.com,auth.permitting@trilogy.com`
+  - P1 Accountable person added to DD report emails automatically
+- [x] **Inbox scan window extended (03/12/2026):**
+  - Expanded from 8AM–6PM to 6AM–8PM Central, Mon–Fri
+  - Split into two cron entries to avoid GitHub Actions parsing issues
+- [x] **Daily DD check site filter (03/12/2026):**
+  - Added `--site` input to workflow_dispatch for targeted manual runs
 
 ---
 
