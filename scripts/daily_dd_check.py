@@ -62,8 +62,8 @@ logger = logging.getLogger("daily_dd_check")
 
 # Only process sites in these Overall Site Stages
 ACTIVE_STAGES = {
-    "1. Looking for Site",
-    "2. Evaluating Potential Site (LOI)",
+    "1. Looking for Sites",
+    "2. Evaluating Potential Sites (LOI)",
 }
 
 
@@ -115,14 +115,14 @@ def main(site_filter: str | None = None) -> None:
 
         # Only process sites with an active Wrike status
         if not is_record_active(record, active_status_ids):
-            logger.info("Skipping '%s' — status group is not Active", site_title)
+            logger.debug("Skipping '%s' — status group is not Active", site_title)
             skipped += 1
             continue
 
         # Only process sites in active DD stages
         stage = extract_stage_from_record(record)
         if stage not in ACTIVE_STAGES:
-            logger.info("Skipping '%s' — stage '%s' not in active stages", site_title, stage)
+            logger.debug("Skipping '%s' — stage '%s' not in active stages", site_title, stage)
             skipped += 1
             continue
 

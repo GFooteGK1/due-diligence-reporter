@@ -189,8 +189,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
 
     # Only process sites in these Overall Site Stages
     ACTIVE_STAGES = {
-        "1. Looking for Site",
-        "2. Evaluating Potential Site (LOI)",
+        "1. Looking for Sites",
+        "2. Evaluating Potential Sites (LOI)",
     }
 
     unique_sites = _extract_unique_sites_from_uploads(uploads)
