@@ -289,10 +289,19 @@ def _get_active_status_ids(*, access_token: str) -> set[str]:
 
 
 def is_record_active(record: dict[str, Any], active_status_ids: set[str]) -> bool:
-    """Return True if the record's customStatusId belongs to the 'Active' status group."""
+    """Return True if the record's customStatusId belongs to the 'Active' status group.
+
+    If the record has no customStatusId (field missing from API response),
+    defaults to True so the record is not incorrectly filtered out.
+    """
     status_id = record.get("customStatusId")
     if not isinstance(status_id, str):
-        return False
+        # No status on record — assume active to avoid false exclusions
+        logger.debug(
+            "Record '%s' has no customStatusId — treating as active",
+            record.get("title", "?"),
+        )
+        return True
     return status_id in active_status_ids
 
 
@@ -423,7 +432,7 @@ def _get_all_site_records(*, cfg: WrikeConfig) -> list[dict[str, Any]]:
         resp = requests.get(
             url,
             headers=_wrike_headers(cfg.access_token),
-            params={"fields": '["customItemTypeId"]'},
+            params={"fields": '["customItemTypeId","customStatusId"]'},
             timeout=WRIKE_TIMEOUT_SECONDS,
         )
         _raise_for_wrike_error(resp)
