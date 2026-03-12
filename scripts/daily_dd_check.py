@@ -115,14 +115,14 @@ def main(site_filter: str | None = None) -> None:
 
         # Only process sites with an active Wrike status
         if not is_record_active(record, active_status_ids):
-            logger.debug("Skipping '%s' — status group is not Active", site_title)
+            logger.info("Skipping '%s' — status group is not Active", site_title)
             skipped += 1
             continue
 
         # Only process sites in active DD stages
         stage = extract_stage_from_record(record)
         if stage not in ACTIVE_STAGES:
-            logger.debug("Skipping '%s' — stage '%s' not in active stages", site_title, stage)
+            logger.info("Skipping '%s' — stage '%s' not in active stages", site_title, stage)
             skipped += 1
             continue
 
