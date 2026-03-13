@@ -53,8 +53,7 @@ from due_diligence_reporter.wrike import (
     extract_address_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
-    extract_stage_from_record,
-    is_record_active,
+    filter_active_site_records,
     load_wrike_config,
 )
 
@@ -116,11 +115,13 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         scopes=settings.google_scopes,
     )
 
-    # Fetch all Wrike site records
+    # Fetch all Wrike site records and filter to active sites
     logger.info("Fetching Wrike site records...")
     wrike_cfg = load_wrike_config()
-    site_records = _get_all_site_records(cfg=wrike_cfg)
-    logger.info("Found %d site records", len(site_records))
+    all_records = _get_all_site_records(cfg=wrike_cfg)
+    active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
+    site_records = filter_active_site_records(all_records, active_status_ids)
+    logger.info("Found %d site records (%d active)", len(all_records), len(site_records))
 
     # ── Phase 1: Inbox scan ──────────────────────────────────────────────────
     results = scan_inbox(gc, site_records, settings, dry_run=dry_run)
@@ -187,17 +188,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         logger.info("No uploads — skipping pipeline phase")
         return
 
-    # Only process sites in these Overall Site Stages
-    ACTIVE_STAGES = {
-        "1. Looking for Sites",
-        "2. Evaluating Potential Sites (LOI)",
-    }
-
     unique_sites = _extract_unique_sites_from_uploads(uploads)
     logger.info("Pipeline phase: %d unique site(s) received new uploads", len(unique_sites))
-
-    # Fetch active status IDs for filtering
-    active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
 
     # Load the agent system prompt
     prompt_path = _project_root / "prompt.md"
@@ -211,21 +203,10 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         site_title = site_info["site_title"]
         site_id = site_info.get("matched_site_id")
 
-        # Look up the full Wrike record
+        # Look up the full Wrike record (already filtered to active sites)
         record = _find_record_by_title_or_id(site_records, site_title, site_id)
         if not record:
             logger.warning("No Wrike record found for '%s' — skipping pipeline", site_title)
-            continue
-
-        # Skip sites not in an active Wrike status
-        if not is_record_active(record, active_status_ids):
-            logger.info("Skipping pipeline for '%s' — status group is not Active", site_title)
-            continue
-
-        # Skip sites not in the right stage
-        stage = extract_stage_from_record(record)
-        if stage not in ACTIVE_STAGES:
-            logger.info("Skipping pipeline for '%s' — stage '%s' not in active stages", site_title, stage)
             continue
 
         drive_folder_url = extract_google_folder_from_record(record)

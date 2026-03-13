@@ -600,6 +600,47 @@ def find_site_record(
     return None
 
 
+ACTIVE_DD_STAGES: set[str] = {
+    "1. Looking for Sites",
+    "2. Evaluating Potential Sites (LOI)",
+}
+
+
+def filter_active_site_records(
+    records: list[dict[str, Any]],
+    active_status_ids: set[str],
+    *,
+    allowed_stages: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Filter site records to only those with Active status and an allowed DD stage.
+
+    Returns a new list; does not modify the input.
+    """
+    if allowed_stages is None:
+        allowed_stages = ACTIVE_DD_STAGES
+
+    filtered: list[dict[str, Any]] = []
+    for record in records:
+        title = record.get("title", "Unknown")
+
+        if not is_record_active(record, active_status_ids):
+            logger.debug("Filtering out '%s' — status group is not Active", title)
+            continue
+
+        stage = extract_stage_from_record(record)
+        if stage not in allowed_stages:
+            logger.debug("Filtering out '%s' — stage '%s' not in allowed stages", title, stage)
+            continue
+
+        filtered.append(record)
+
+    logger.info(
+        "Filtered site records: %d of %d are active with allowed stages",
+        len(filtered), len(records),
+    )
+    return filtered
+
+
 def build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
     """
     Build a concise DD-relevant summary dict from a Wrike Site Record.

@@ -48,8 +48,7 @@ from due_diligence_reporter.wrike import (
     extract_address_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
-    extract_stage_from_record,
-    is_record_active,
+    filter_active_site_records,
     load_wrike_config,
 )
 
@@ -59,12 +58,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger("daily_dd_check")
-
-# Only process sites in these Overall Site Stages
-ACTIVE_STAGES = {
-    "1. Looking for Sites",
-    "2. Evaluating Potential Sites (LOI)",
-}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,11 +80,12 @@ def main(site_filter: str | None = None) -> None:
         scopes=settings.google_scopes,
     )
 
-    # Fetch all Wrike site records and active status IDs
+    # Fetch all Wrike site records, then filter to active sites in DD stages
     logger.info("Fetching all Wrike site records...")
     all_records = _get_all_site_records(cfg=wrike_cfg)
     active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
-    logger.info("Found %d site records", len(all_records))
+    active_records = filter_active_site_records(all_records, active_status_ids)
+    logger.info("Found %d site records (%d active in DD stages)", len(all_records), len(active_records))
 
     # Pre-fetch shared folder file lists once for all sites
     logger.info("Listing shared Drive folders (SIR, ISP, Building Inspection)...")
@@ -104,26 +98,12 @@ def main(site_filter: str | None = None) -> None:
     )
 
     results: list[PipelineResult] = []
+    skipped = len(all_records) - len(active_records)
 
-    skipped = 0
-
-    for record in all_records:
+    for record in active_records:
         site_title = record.get("title", "Unknown")
 
         if site_filter and site_filter.lower() not in site_title.lower():
-            continue
-
-        # Only process sites with an active Wrike status
-        if not is_record_active(record, active_status_ids):
-            logger.debug("Skipping '%s' — status group is not Active", site_title)
-            skipped += 1
-            continue
-
-        # Only process sites in active DD stages
-        stage = extract_stage_from_record(record)
-        if stage not in ACTIVE_STAGES:
-            logger.debug("Skipping '%s' — stage '%s' not in active stages", site_title, stage)
-            skipped += 1
             continue
 
         drive_folder_url = extract_google_folder_from_record(record)
