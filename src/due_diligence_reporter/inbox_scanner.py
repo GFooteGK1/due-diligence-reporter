@@ -1,8 +1,8 @@
 """Inbox scanner for auto-filing DD documents from email to Google Drive.
 
-Scans a Gmail inbox (auth.permitting@trilogy.com Google Group) for emails with
-PDF attachments, classifies them as SIR or Building Inspection using GPT-4o-mini,
-matches to a Wrike site record, and uploads to the correct shared Drive folder.
+Scans Gmail for emails sent to edu.ops@trilogy.com with PDF attachments,
+classifies them as SIR or Building Inspection using GPT-5.2, matches to a
+Wrike site record, and uploads to the correct shared Drive folder.
 """
 
 from __future__ import annotations

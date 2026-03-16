@@ -83,7 +83,7 @@ class Settings(BaseSettings):
 
     # Inbox Scanner
     inbox_scan_query: str = Field(
-        "to:auth.permitting@trilogy.com has:attachment filename:pdf",
+        "to:edu.ops@trilogy.com has:attachment filename:pdf",
         description="Gmail search query for incoming DD documents",
     )
     inbox_processed_label: str = Field(
