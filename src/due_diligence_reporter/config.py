@@ -63,14 +63,10 @@ class Settings(BaseSettings):
         description="Drive folder ID for shared Building Inspection documents",
     )
 
-    # Building Optimizer / Pricing API
+    # Building Optimizer / Pricing API (v2 — no API key required)
     pricing_api_url: str = Field(
         "https://pricing-api-738625530258.us-central1.run.app",
         description="Base URL for the Building Optimizer pricing API",
-    )
-    pricing_api_key: str = Field(
-        "",
-        description="API key for the Building Optimizer pricing API (X-API-Key header)",
     )
 
     # Email (Gmail SMTP with App Password)

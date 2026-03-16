@@ -310,17 +310,20 @@ def _school_zone(score: int) -> str:
 # COST ESTIMATE — Building Optimizer API + per-SF code-required item estimates
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Components that map to each DD report cost category
+# Components that map to each DD report cost category (v2 API)
 _FINISH_WORK_COMPONENTS = {"floors", "walls", "ceiling"}
 _MEP_COMPONENTS = {"hvac", "lighting"}   # electrical (lighting) + mechanical; plumbing → bathrooms
 _FFE_COMPONENTS = {"tech", "millwork", "security"}
 _BATHROOM_COMPONENTS = {"plumbing", "fixtures"}  # restroom rooms only
+_SPRINKLER_COMPONENTS = {"sprinkler"}
+_FIRE_ALARM_COMPONENTS = {
+    "fireAlarm", "emergencyLighting", "egressHardware",
+    "fireCompliance", "fireMonitoring",
+}
 
-# Per-SF cost ranges for items not in the Optimizer (code-required work)
+# Per-SF cost ranges for items NOT available in the Optimizer API
 _PER_SF_RANGES: dict[str, tuple[float, float]] = {
     "structural": (8.0, 25.0),    # foundation/structural remediation
-    "sprinkler": (3.0, 7.0),      # fire suppression installation
-    "fire_alarm": (2.0, 4.0),     # fire alarm system
     "ada": (2.0, 8.0),            # ADA / accessibility upgrades
 }
 
@@ -352,27 +355,38 @@ def _build_rooms_payload(
     rooms: list[dict[str, Any]],
     finish_level: int,
 ) -> list[dict[str, Any]]:
-    """Build a rooms list for the API with all components set to finish_level."""
+    """Build a rooms list for the v2 API with all components set to finish_level.
+
+    Fire-safety components (sprinkler, fireAlarm, emergencyLighting, egressHardware,
+    fireCompliance, fireMonitoring) are always included — the API returns $0 at level 0
+    and real costs at level >= 1.
+    """
+    # Fire-safety components present on every v2 room type
+    _FIRE_SAFETY = [
+        "fireAlarm", "sprinkler", "emergencyLighting",
+        "egressHardware", "fireCompliance", "fireMonitoring",
+    ]
     component_keys_by_type: dict[str, list[str]] = {
-        "learningroom":  ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
-        "hallway":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"],
-        "office":        ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
-        "conferenceroom":["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
-        "breakroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "millwork"],
-        "restroom":      ["floors", "walls", "ceiling", "lighting", "plumbing", "fixtures"],
-        "limitlessroom": ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
-        "rocketroom":    ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"],
-        "multipurpose":  ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "security"],
-        "reception":     ["floors", "walls", "ceiling", "lighting", "hvac", "millwork", "security"],
-        "storage":       ["floors", "walls", "ceiling", "lighting"],
-        "lobby":         ["floors", "walls", "ceiling", "lighting", "hvac", "security"],
-        "otherroom":     ["floors", "walls", "ceiling", "lighting", "hvac"],
-        "workshop":      ["floors", "walls", "ceiling", "lighting", "hvac"],
+        "learningroom":  ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
+        "hallway":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
+        "office":        ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
+        "conferenceroom":["floors", "walls", "ceiling", "lighting", "hvac", "tech", "security"] + _FIRE_SAFETY,
+        "breakroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "millwork", "appliances", "security"] + _FIRE_SAFETY,
+        "restroom":      ["floors", "walls", "ceiling", "lighting", "plumbing", "fixtures", "security"] + _FIRE_SAFETY,
+        "limitlessroom": ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
+        "rocketroom":    ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
+        "multipurpose":  ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
+        "reception":     ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
+        "storage":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
+        "lobby":         ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
+        "otherroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
+        "workshop":      ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
     }
+    default_keys = ["floors", "walls", "ceiling", "lighting"] + _FIRE_SAFETY
     result = []
     for room in rooms:
         room_type = room.get("type", "otherroom")
-        keys = component_keys_by_type.get(room_type, ["floors", "walls", "ceiling", "lighting"])
+        keys = component_keys_by_type.get(room_type, default_keys)
         result.append({
             "type": room_type,
             "sqft": room.get("sqft", 400),
@@ -421,14 +435,13 @@ def _auto_generate_rooms(total_sf: int, classroom_count: int) -> list[dict[str, 
 
 def _call_pricing_api(
     api_url: str,
-    api_key: str,
     rooms_payload: list[dict[str, Any]],
     region: str,
 ) -> dict[str, Any]:
-    """POST to the Building Optimizer /v1/estimate endpoint."""
+    """POST to the Building Optimizer v2 /v1/estimate endpoint."""
     resp = requests.post(
         f"{api_url}/v1/estimate",
-        headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
         json={"rooms": rooms_payload, "region": region, "fees": {}},
         timeout=30,
     )
@@ -1205,15 +1218,7 @@ async def get_cost_estimate(
         }
 
     settings = get_settings()
-    api_key = settings.pricing_api_key
     api_url = settings.pricing_api_url
-
-    if not api_key:
-        return {
-            "status": "error",
-            "error": "Missing configuration",
-            "message": "PRICING_API_KEY is not configured.",
-        }
 
     resolved_region = _resolve_region(region)
     room_list = rooms if rooms else _auto_generate_rooms(total_building_sf, classroom_count)
@@ -1224,12 +1229,12 @@ async def get_cost_estimate(
     try:
         # Call API at level 1 (Refresh) for LOW estimates
         low_payload = _build_rooms_payload(room_list, finish_level=1)
-        low_resp = _call_pricing_api(api_url, api_key, low_payload, resolved_region)
+        low_resp = _call_pricing_api(api_url, low_payload, resolved_region)
         low_rooms = low_resp["data"]["rooms"]
 
         # Call API at level 3 (Alpha) for HIGH estimates
         high_payload = _build_rooms_payload(room_list, finish_level=3)
-        high_resp = _call_pricing_api(api_url, api_key, high_payload, resolved_region)
+        high_resp = _call_pricing_api(api_url, high_payload, resolved_region)
         high_rooms = high_resp["data"]["rooms"]
 
     except requests.HTTPError as e:
@@ -1248,13 +1253,15 @@ async def get_cost_estimate(
     ffe_high    = _sum_components(high_rooms, _FFE_COMPONENTS)
     bath_low    = _sum_bathroom_components(low_rooms)
     bath_high   = _sum_bathroom_components(high_rooms)
+    sprinkler_low  = _sum_components(low_rooms,  _SPRINKLER_COMPONENTS)
+    sprinkler_high = _sum_components(high_rooms, _SPRINKLER_COMPONENTS)
+    fa_low         = _sum_components(low_rooms,  _FIRE_ALARM_COMPONENTS)
+    fa_high        = _sum_components(high_rooms, _FIRE_ALARM_COMPONENTS)
 
-    # Per-SF estimates for code-required items not in the Optimizer
+    # Per-SF estimates for items still not in the Optimizer API
     sf = total_building_sf
-    struct_low,    struct_high    = sf * _PER_SF_RANGES["structural"][0],  sf * _PER_SF_RANGES["structural"][1]
-    sprinkler_low, sprinkler_high = sf * _PER_SF_RANGES["sprinkler"][0],   sf * _PER_SF_RANGES["sprinkler"][1]
-    fa_low,        fa_high        = sf * _PER_SF_RANGES["fire_alarm"][0],  sf * _PER_SF_RANGES["fire_alarm"][1]
-    ada_low,       ada_high       = sf * _PER_SF_RANGES["ada"][0],         sf * _PER_SF_RANGES["ada"][1]
+    struct_low,  struct_high = sf * _PER_SF_RANGES["structural"][0], sf * _PER_SF_RANGES["structural"][1]
+    ada_low,     ada_high    = sf * _PER_SF_RANGES["ada"][0],        sf * _PER_SF_RANGES["ada"][1]
 
     # Subtotals (before contingency)
     sub_low  = finish_low  + mep_low  + ffe_low  + bath_low  + struct_low  + sprinkler_low  + fa_low  + ada_low
@@ -1292,10 +1299,8 @@ async def get_cost_estimate(
         "q3.total_high":        fmt(total_high),
         "q3.calculated_budget": f"${fmt(total_low)} – ${fmt(total_high)}",
         "q3.budget_formula":    (
-            "Building Optimizer (finish, MEP, FF&E, bathrooms) + "
+            "Building Optimizer v2 (finish, MEP, FF&E, bathrooms, sprinkler, fire alarm) + "
             f"per-SF estimates (structural ${_PER_SF_RANGES['structural'][0]:.0f}–${_PER_SF_RANGES['structural'][1]:.0f}/SF, "
-            f"sprinkler ${_PER_SF_RANGES['sprinkler'][0]:.0f}–${_PER_SF_RANGES['sprinkler'][1]:.0f}/SF, "
-            f"fire alarm ${_PER_SF_RANGES['fire_alarm'][0]:.0f}–${_PER_SF_RANGES['fire_alarm'][1]:.0f}/SF, "
             f"ADA ${_PER_SF_RANGES['ada'][0]:.0f}–${_PER_SF_RANGES['ada'][1]:.0f}/SF) + 15–20% contingency"
         ),
         "q3.budget_status":     "[Review against acquisition budget]",

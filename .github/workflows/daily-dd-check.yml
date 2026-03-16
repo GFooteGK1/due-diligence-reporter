@@ -57,7 +57,7 @@ jobs:
           DD_REPORT_EMAIL_RECIPIENTS: ${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-          PRICING_API_KEY: ${{ secrets.PRICING_API_KEY }}
+
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
           BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
@@ -72,7 +72,7 @@ jobs:
           echo "DD_REPORT_EMAIL_RECIPIENTS=${DD_REPORT_EMAIL_RECIPIENTS}" >> .env
           echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
-          echo "PRICING_API_KEY=${PRICING_API_KEY}" >> .env
+
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
           echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
