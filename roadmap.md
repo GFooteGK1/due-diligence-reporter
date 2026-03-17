@@ -2,7 +2,7 @@
 
 ## Status: Active Development
 
-Last updated: 03/12/2026
+Last updated: 03/16/2026
 
 ---
 
@@ -46,6 +46,22 @@ Last updated: 03/12/2026
   - Split into two cron entries to avoid GitHub Actions parsing issues
 - [x] **Daily DD check site filter (03/12/2026):**
   - Added `--site` input to workflow_dispatch for targeted manual runs
+- [x] **Building Optimizer v2 API upgrade (03/16/2026):**
+  - Upgraded from v1 (API key required) to v2 (open access, no key)
+  - Sprinkler and fire alarm costs now come from the API instead of local per-SF estimates
+  - 6 new v2 component keys: `fireAlarm`, `sprinkler`, `emergencyLighting`, `egressHardware`, `fireCompliance`, `fireMonitoring`
+  - Structural and ADA remain as per-SF estimates (not in API)
+  - Removed `PRICING_API_KEY` from config, all workflows, and scripts
+  - Updated `_build_rooms_payload` component lists to match v2 room type catalog
+- [x] **Inactive site filtering fix (03/16/2026):**
+  - Confirmed Site Records have no `customStatusId` — the Wrike workflow status check was a no-op
+  - Cancelled/dead sites removed from EDU Ops space in Wrike (92 → 80 records)
+  - Stage filter (stages 1–2 only) confirmed working correctly
+- [x] **Inbox scanner account migration (03/16/2026):**
+  - Switched inbox scan from `auth.permitting@trilogy.com` to `edu.ops@trilogy.com`
+  - Updated Gmail search query in `config.py`
+  - OAuth refresh token updated to `edu.ops@trilogy.com` account (GitHub secret + local .env)
+  - Granted `edu.ops@trilogy.com` access to shared Drive folders and DD report template
 
 ---
 
@@ -64,11 +80,6 @@ Last updated: 03/12/2026
 - Option B: Convert each skill to an MCP tool call (`apply_e_occupancy_skill(building_type, stories)` → returns score/zone/tier/timeline) — forces explicit invocation and returns structured output
 - Option C: Add a `read_skill_file(skill_name)` tool so the agent reads the skill on demand (lazy load vs. always in context)
 
-### 3. Building Optimizer Integration
-**Goal:** Populate Q3 cost estimates programmatically from the Building Optimizer instead of relying on a manual ISP document.
-**Unknown:** What form is the Building Optimizer? (MCP server / REST API / Google Sheet / internal tool)
-**Next step:** Clarify with user, then design integration approach.
-
 ---
 
 ## Backlog
@@ -77,6 +88,7 @@ Last updated: 03/12/2026
 - [ ] Renderings section: agent currently skips `renderings_links` — needs guidance on where renderings live in Drive
 - [ ] Multi-site batch mode: run DD reports for a list of sites in one agent session
 - [ ] LiDAR data extraction: `lidar_summary` and `as_built_links` often left as [TBD]
+- [ ] Remove stale `is_record_active` / `_get_active_status_ids` code — Site Records don't use `customStatusId`; the check is a no-op
 
 ---
 

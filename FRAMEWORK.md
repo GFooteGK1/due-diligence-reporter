@@ -118,7 +118,7 @@ If `street_address`, `city`, `state`, or `zip` are missing → skip this email.
 - Takes the Wrike record ID from step 3.1
 - Fetches the record and parses the SIR (Site Information Report) URL from the description
 - Downloads the SIR PDF
-- Sends an email via AWS SES to CDS (auth.permitting@trilogy.com) with:
+- Sends an email via AWS SES to CDS (edu.ops@trilogy.com) with:
   - Subject: "New Site Kickoff: {address}"
   - Body table: address, school type, grades, student count, staff count
   - Attachment: SIR PDF

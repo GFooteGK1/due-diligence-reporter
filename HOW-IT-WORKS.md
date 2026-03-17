@@ -11,7 +11,7 @@
 The Due Diligence Reporter is an AI agent powered by Claude that generates Site Due Diligence (DD) Reports for potential Alpha School locations. It operates in three modes:
 
 1. **Interactive** — A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
-2. **Event-Driven (Inbox Scan — every 15 min)** — A scheduled script scans the `auth.permitting@trilogy.com` inbox for new SIR and Building Inspection PDFs, classifies them with GPT-5.2, uploads to the correct shared Drive folder, then immediately checks if the site is ready for report generation.
+2. **Event-Driven (Inbox Scan — every 15 min)** — A scheduled script scans the `edu.ops@trilogy.com` inbox for new SIR and Building Inspection PDFs, classifies them with GPT-5.2, uploads to the correct shared Drive folder, then immediately checks if the site is ready for report generation.
 3. **Daily Sweep (Safety Net — 9 AM)** — A scheduled script scans all Wrike Site Records in active DD stages. When a site has all three required documents (SIR, ISP, Building Inspection) and no existing report, it triggers full report generation. This catches anything the 15-min scan missed.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
@@ -76,7 +76,7 @@ Claude AI Agent ◄─────────┘
 **Schedule:** Every 15 minutes, 8 AM–6 PM Central, Monday–Friday (GitHub Actions cron: `*/15 13-23 * * 1-5` UTC)
 **Workflow:** `.github/workflows/inbox-scan.yml`
 
-The inbox scanner is the primary trigger for report generation. When a vendor emails a SIR or Building Inspection to `auth.permitting@trilogy.com`, the scanner picks it up within 15 minutes.
+The inbox scanner is the primary trigger for report generation. When a vendor emails a SIR or Building Inspection to `edu.ops@trilogy.com`, the scanner picks it up within 15 minutes.
 
 ### Phase 1 — Scan, Classify, Upload
 
