@@ -40,6 +40,12 @@ class TestGenerateDriveFilename:
         assert "Alpha Boca Raton" in name
         assert name.endswith(".pdf")
 
+    def test_isp_filename_contains_isp_keyword(self):
+        name = _generate_drive_filename("Alpha Southlake", "isp")
+        assert "ISP" in name
+        assert "Alpha Southlake" in name
+        assert name.endswith(".pdf")
+
     def test_filename_starts_with_date(self):
         name = _generate_drive_filename("Alpha Keller", "sir")
         today = datetime.now().strftime("%b %d %Y")
@@ -78,6 +84,16 @@ class TestClassifyPromptStructure:
     def test_fallback_classify_inspection(self):
         result = _fallback_classify("Building_Inspection_Boca.pdf", [])
         assert result.doc_type == "building_inspection"
+        assert result.confidence > 0
+
+    def test_fallback_classify_isp(self):
+        result = _fallback_classify("Alpha_Keller_ISP_2026.pdf", [])
+        assert result.doc_type == "isp"
+        assert result.confidence > 0
+
+    def test_fallback_classify_program_fit(self):
+        result = _fallback_classify("Program Fit Analysis - Keller.pdf", [])
+        assert result.doc_type == "isp"
         assert result.confidence > 0
 
     def test_fallback_classify_unknown(self):
