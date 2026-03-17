@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scan_inbox.py — Scan auth.permitting@trilogy.com inbox for DD documents.
+scan_inbox.py — Scan edu.ops@trilogy.com inbox for DD documents.
 
 Finds emails with PDF attachments (SIR, Building Inspection), classifies them
 using GPT-4o-mini, matches to a Wrike site record, and uploads to the correct
@@ -147,7 +147,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     SIR_NOTIFICATION_RECIPIENTS = [
         "jake.petersen@trilogy.com",
         "joshua.rockers@trilogy.com",
-        "auth.permitting@trilogy.com",
+        "edu.ops@trilogy.com",
     ]
 
     sir_uploads = [u for u in results.get("uploads", []) if u.get("doc_type") == "sir"]
