@@ -351,6 +351,20 @@ class GoogleClient:
             logger.error("Failed to batch update document %s: %s", document_id, error)
             raise RuntimeError(f"Failed to batch update document: {error}") from error
 
+    def get_document(self, document_id: str) -> dict[str, Any]:
+        """Retrieve the full Google Docs document structure (body, lists, etc.).
+
+        Returns the raw API response dict including ``body.content`` with
+        character indices needed for insertInlineImage operations.
+        """
+        logger.info("Getting document structure: %s", document_id)
+        try:
+            doc = self.docs_service.documents().get(documentId=document_id).execute()
+            return doc
+        except HttpError as error:
+            logger.error("Failed to get document %s: %s", document_id, error)
+            raise RuntimeError(f"Failed to get document: {error}") from error
+
     # ---------- Drive Upload ----------
 
     def upload_file_to_folder(

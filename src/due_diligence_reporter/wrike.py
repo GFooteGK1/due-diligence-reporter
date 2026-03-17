@@ -600,6 +600,84 @@ def find_site_record(
     return None
 
 
+def get_record_comments(
+    *, record_id: str, cfg: WrikeConfig | None = None
+) -> list[dict[str, Any]]:
+    """Fetch comments on a Wrike folder/record, sorted newest-first.
+
+    Returns list of ``{author, text, created_date}`` dicts.
+    """
+    if cfg is None:
+        cfg = load_wrike_config()
+
+    url = f"{WRIKE_API_BASE_URL}/folders/{record_id}/comments"
+    logger.info("Fetching comments for record: %s", record_id)
+
+    resp = requests.get(
+        url,
+        headers=_wrike_headers(cfg.access_token),
+        timeout=WRIKE_TIMEOUT_SECONDS,
+    )
+    _raise_for_wrike_error(resp)
+
+    payload: dict[str, Any] = resp.json()
+    raw_comments = payload.get("data", [])
+
+    comments: list[dict[str, Any]] = []
+    for c in raw_comments:
+        if not isinstance(c, dict):
+            continue
+        text = c.get("text", "")
+        # Strip HTML tags from comment text
+        text = re.sub(r"<[^>]+>", "", text).strip()
+        if not text:
+            continue
+        comments.append({
+            "author": c.get("authorId", ""),
+            "text": text,
+            "created_date": c.get("createdDate", ""),
+        })
+
+    # Sort newest-first
+    comments.sort(key=lambda x: x.get("created_date", ""), reverse=True)
+    logger.info("Found %d comments for record %s", len(comments), record_id)
+    return comments
+
+
+# Keywords for classifying a comment to a report section
+_COMMENT_SECTION_KEYWORDS: dict[str, list[str]] = {
+    "q1": ["zoning", "permit", "ahj", "authority having jurisdiction", "variance",
+           "conditional use", "special use", "cup", "sup", "pre-app", "pre-application",
+           "meeting notes", "fire marshal", "code enforcement"],
+    "q2": ["inspection", "building", "hvac", "sprinkler", "fire alarm", "structural",
+           "roof", "plumbing", "electrical", "ada", "egress", "matterport", "floorplan"],
+    "q3": ["cost", "budget", "estimate", "pricing", "quote", "bid", "expenditure"],
+    "q4": ["timeline", "schedule", "milestone", "deadline", "target date", "opening"],
+    "appendix": ["pre-app notes", "pre-application notes", "meeting minutes",
+                  "attachment", "document link"],
+}
+
+
+def classify_comment_to_section(comment_text: str) -> str:
+    """Map a comment's content to a report section using keyword matching.
+
+    Returns a section key: ``"q1"``, ``"q2"``, ``"q3"``, ``"q4"``, ``"appendix"``,
+    or ``"general"`` if no section matched.
+    """
+    text_lower = comment_text.lower()
+
+    scores: dict[str, int] = {}
+    for section, keywords in _COMMENT_SECTION_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in text_lower)
+        if score > 0:
+            scores[section] = score
+
+    if not scores:
+        return "general"
+
+    return max(scores, key=lambda k: scores[k])
+
+
 ACTIVE_DD_STAGES: set[str] = {
     "1. Looking for Sites",
     "2. Evaluating Potential Sites (LOI)",

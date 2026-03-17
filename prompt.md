@@ -327,6 +327,14 @@ Call `check_site_readiness(site_name)`. This returns:
 - `missing_docs` — list of missing document types
 - `message` — human-readable summary with filenames
 
+### Step 2.5 — Retrieve Wrike comments
+Call `get_site_comments(site_name)` to fetch comments on the Wrike record. These may contain pre-app meeting notes, vendor updates, zoning details, or other contextual information. Comments are grouped by suggested report section (q1, q2, q3, q4, appendix, general). Incorporate relevant comments into the matching report sections:
+- Pre-app meeting notes → `q1.pre_app_meeting` and/or `appendix.pre_app_notes_link`
+- Zoning/permit comments → Q1 fields
+- Building/inspection comments → Q2 fields
+- Cost/budget comments → Q3 fields
+- Timeline/schedule comments → Q4 fields
+
 ### Step 3 — Present the discovery summary
 Before reading any documents, show the user what was found:
 
@@ -354,7 +362,9 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 - `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list (if ISP was found)
 
 ### Step 6 — Generate the report
-Call `create_dd_report(site_name, drive_folder_url, report_data)` with the assembled data dict. See "Report Data Schema" section below for exact token keys.
+Call `create_dd_report(site_name, drive_folder_url, report_data, isp_file_id)` with the assembled data dict. Pass the ISP file ID from the Step 2 readiness check (from `files.isp.id`) so the floorplan image can be extracted and embedded. See "Report Data Schema" section below for exact token keys.
+
+The M1 Property Acquired subfolder link (`q2.renderings_link`) is auto-populated from the site's Drive folder — you do not need to set it manually.
 
 ### Step 7 — Verify completeness
 Call `check_report_completeness(doc_id)`. If any `{{token}}` placeholders remain, attempt to fill them. `[Not found — ...]` labels are acceptable and not blocking.
@@ -364,6 +374,15 @@ Call `check_report_completeness(doc_id)`. If any `{{token}}` placeholders remain
 
 - Pass the `p1_assignee_email` from the Step 2 readiness check as `additional_recipients` so the P1 Assignee receives the report alongside the default recipients.
 - Include a brief summary of key findings and any missing documents in the `key_findings` body.
+
+### Step 9 — Trigger marketing renderings (if Matterport scan available)
+If a Matterport scan was found in the site files (doc_type `matterport`), and the M1 subfolder does not already contain rendering images, call `generate_marketing_pack(space_sid, space_name)` to trigger MatterBot.
+
+- `space_sid` — the Matterport space SID (extract from the Matterport file URL or name)
+- `space_name` — the site name (used for Drive folder matching)
+- Optional: pass `tier="premium"` for flagship sites, `room_types="classroom,commons"` to limit scope
+
+MatterBot is fire-and-forget. Images will appear in the M1 folder within 5-15 minutes. The `q2.renderings_link` field already auto-populates from the M1 folder, so no additional wiring is needed — the link will resolve on the next report generation.
 
 ### Gap labels for missing documents
 If a document was not found in Step 2, use sourced gap labels for every field that would come from it:
@@ -460,6 +479,8 @@ You may pass keys as either:
 | `q2.ust_database` | Underground storage tank database check | Phase I ESA |
 | `q2.as_built_links` | Links to as-built drawings if available | Drive folder |
 | `q2.lidar_summary` | Matterport/LiDAR scan summary | Matterport file |
+| `q2.renderings_link` | Link to M1 Property Acquired subfolder | Auto-populated from Drive |
+| `q2.floorplan_image` | Floorplan image from ISP PDF | Auto-embedded from `isp_file_id` |
 
 ### q3 — Cost estimate
 

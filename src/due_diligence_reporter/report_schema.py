@@ -83,6 +83,8 @@ TEMPLATE_TOKENS: list[str] = [
     "q2.ust_database",
     "q2.as_built_links",
     "q2.lidar_summary",
+    "q2.renderings_link",
+    "q2.floorplan_image",
     # ── q3: cost estimate (23 fields from get_cost_estimate + 1) ──────────
     "q3.structural_low",
     "q3.structural_high",
@@ -203,6 +205,8 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "appendix.phase_i_esa_link":          "appendix.phase1_esa_link",
     "appendix.drive_folder_link":         "meta.drive_folder_url",
     "appendix.site_folder_link":          "meta.drive_folder_url",
+    # ── Q2 renderings / M1 folder alias ──────────────────────────────────
+    "q2.m1_folder_link":                  "q2.renderings_link",
 }
 
 

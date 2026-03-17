@@ -80,6 +80,89 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         return ""
 
 
+def extract_floorplan_image_from_isp(pdf_bytes: bytes) -> tuple[bytes, str] | None:
+    """Extract the floorplan image from an ISP PDF.
+
+    Searches for the page containing "Program Fit" or "Room Assignment" text,
+    then returns the largest image from that page as ``(image_bytes, mime_type)``.
+    Returns ``None`` if no suitable image is found.
+    """
+    try:
+        from pypdf import PdfReader  # type: ignore[import-untyped]
+    except ImportError:
+        logger.error("pypdf not installed; cannot extract floorplan image")
+        return None
+
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        target_keywords = ["program fit", "room assignment", "fit-room", "floorplan"]
+
+        # Find the page with the floorplan diagram
+        target_page_idx: int | None = None
+        for i, page in enumerate(reader.pages):
+            text = (page.extract_text() or "").lower()
+            if any(kw in text for kw in target_keywords):
+                target_page_idx = i
+                break
+
+        if target_page_idx is None:
+            logger.info("No floorplan page found in ISP PDF")
+            return None
+
+        page = reader.pages[target_page_idx]
+
+        # Extract images from the target page
+        if not hasattr(page, "images") or not page.images:
+            logger.info("No images found on floorplan page %d", target_page_idx)
+            return None
+
+        # Pick the largest image by data size
+        best_image = max(page.images, key=lambda img: len(img.data))
+        image_bytes = best_image.data
+
+        # Determine MIME type from the image name extension
+        name = best_image.name.lower()
+        if name.endswith(".png"):
+            mime = "image/png"
+        elif name.endswith(".jpg") or name.endswith(".jpeg"):
+            mime = "image/jpeg"
+        else:
+            mime = "image/png"
+
+        logger.info(
+            "Extracted floorplan image from page %d: %d bytes (%s)",
+            target_page_idx, len(image_bytes), mime,
+        )
+        return (image_bytes, mime)
+
+    except Exception as e:
+        logger.error("Failed to extract floorplan image from ISP: %s", e)
+        return None
+
+
+def find_text_index_in_doc(doc_body: dict[str, Any], search_text: str) -> int | None:
+    """Find the start character index of ``search_text`` in a Google Docs body.
+
+    Walks the document body content elements to locate the text.
+    Returns the start index or ``None`` if not found.
+    """
+    for element in doc_body.get("content", []):
+        paragraph = element.get("paragraph")
+        if not paragraph:
+            continue
+        for pe in paragraph.get("elements", []):
+            text_run = pe.get("textRun")
+            if not text_run:
+                continue
+            content = text_run.get("content", "")
+            offset = content.find(search_text)
+            if offset >= 0:
+                start_index = pe.get("startIndex", 0)
+                return start_index + offset
+
+    return None
+
+
 def flatten_report_data_for_replacement(
     report_data: dict[str, Any], prefix: str = ""
 ) -> dict[str, str]:

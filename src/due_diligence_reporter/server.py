@@ -18,11 +18,19 @@ from .google_client import GoogleClient
 from .report_schema import normalize_report_data
 from .utils import (
     build_replace_all_text_requests,
+    extract_floorplan_image_from_isp,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
+    find_text_index_in_doc,
     send_email,
 )
-from .wrike import build_site_summary, extract_p1_email_from_record, find_site_record
+from .wrike import (
+    build_site_summary,
+    classify_comment_to_section,
+    extract_p1_email_from_record,
+    find_site_record,
+    get_record_comments,
+)
 
 # Load environment variables from the project-root .env if present
 load_dotenv()
@@ -600,12 +608,15 @@ def _find_site_docs_in_shared_folders(
 
             all_files_by_type[doc_type] = files
 
-            # Pass 1: substring match
-            for f in files:
-                fname = f.get("name", "").lower()
-                if any(needle in fname for needle in needles):
-                    result[doc_type] = {**f, "doc_type": doc_type}
-                    break
+            # Pass 1: substring match — collect all matches, prefer PDF over converted Google Doc
+            matches = [
+                f for f in files
+                if any(needle in f.get("name", "").lower() for needle in needles)
+            ]
+            if matches:
+                pdf_matches = [f for f in matches if f.get("mimeType") == PDF_MIME]
+                best = pdf_matches[0] if pdf_matches else matches[0]
+                result[doc_type] = {**best, "doc_type": doc_type}
 
         except Exception as e:
             logger.warning(
@@ -625,16 +636,17 @@ def _find_site_docs_in_shared_folders(
             llm_matches = match_file_to_site_llm(filenames, site_title, site_address)
 
             if llm_matches:
-                # Pick highest confidence match
+                # Pick highest confidence match, preferring PDF over converted Google Doc
                 best_fn = max(llm_matches, key=llm_matches.get)  # type: ignore[arg-type]
-                for f in files:
-                    if f.get("name") == best_fn:
-                        result[doc_type] = {**f, "doc_type": doc_type}
-                        logger.info(
-                            "LLM matched '%s' to site '%s' for %s (conf=%.2f)",
-                            best_fn, site_title, doc_type, llm_matches[best_fn],
-                        )
-                        break
+                matched_files = [f for f in files if f.get("name") == best_fn]
+                if matched_files:
+                    pdf_matched = [f for f in matched_files if f.get("mimeType") == PDF_MIME]
+                    best_file = pdf_matched[0] if pdf_matched else matched_files[0]
+                    result[doc_type] = {**best_file, "doc_type": doc_type}
+                    logger.info(
+                        "LLM matched '%s' to site '%s' for %s (conf=%.2f)",
+                        best_fn, site_title, doc_type, llm_matches[best_fn],
+                    )
 
     return result
 
@@ -1342,17 +1354,110 @@ async def get_cost_estimate(
     }
 
 
+def _embed_floorplan_image(
+    gc: GoogleClient,
+    *,
+    doc_id: str,
+    folder_id: str,
+    isp_file_id: str,
+    site_name: str,
+) -> bool:
+    """Extract floorplan image from ISP PDF and embed it in the report document.
+
+    Returns True if the image was successfully inserted, False otherwise.
+    On failure, replaces the ``{{q2.floorplan_image}}`` placeholder with a
+    sourced gap label so no raw token remains in the document.
+    """
+    inserted = False
+
+    if isp_file_id:
+        try:
+            isp_bytes = gc.download_file_bytes(isp_file_id)
+            image_result = extract_floorplan_image_from_isp(isp_bytes)
+
+            if image_result:
+                image_bytes, image_mime = image_result
+                ext = "jpg" if image_mime == "image/jpeg" else "png"
+                uploaded_img = gc.upload_file_to_folder(
+                    folder_id,
+                    f"{site_name.strip()} - Floorplan.{ext}",
+                    image_bytes,
+                    mime_type=image_mime,
+                )
+                # Build a direct download URI from the file ID — webViewLink is
+                # an HTML page, not a fetchable image resource.
+                file_id = uploaded_img.get("id", "")
+                image_uri = (
+                    f"https://drive.google.com/uc?id={file_id}&export=download"
+                )
+
+                doc_struct = gc.get_document(doc_id)
+                doc_body = doc_struct.get("body", {})
+                placeholder = "{{q2.floorplan_image}}"
+                idx = find_text_index_in_doc(doc_body, placeholder)
+
+                if idx is not None and file_id:
+                    image_requests: list[dict[str, Any]] = [
+                        {
+                            "deleteContentRange": {
+                                "range": {
+                                    "startIndex": idx,
+                                    "endIndex": idx + len(placeholder),
+                                }
+                            }
+                        },
+                        {
+                            "insertInlineImage": {
+                                "uri": image_uri,
+                                "location": {"index": idx},
+                                "objectSize": {
+                                    "width": {"magnitude": 500, "unit": "PT"},
+                                    "height": {"magnitude": 350, "unit": "PT"},
+                                },
+                            }
+                        },
+                    ]
+                    gc.batch_update_document(doc_id, image_requests)
+                    inserted = True
+                    logger.info("Inserted floorplan image into document %s", doc_id)
+                else:
+                    logger.warning(
+                        "Could not find {{q2.floorplan_image}} placeholder in doc %s",
+                        doc_id,
+                    )
+            else:
+                logger.info("No floorplan image found in ISP PDF")
+        except Exception as e:
+            logger.warning("Failed to embed floorplan image: %s", e)
+
+    # Fallback: replace placeholder with sourced gap label
+    if not inserted:
+        fallback_requests = build_replace_all_text_requests(
+            {"q2.floorplan_image": "[Floorplan image not available]"}
+        )
+        try:
+            gc.batch_update_document(doc_id, fallback_requests)
+        except Exception as e:
+            logger.warning("Fallback floorplan placeholder replacement failed: %s", e)
+
+    return inserted
+
+
 @mcp.tool()
 async def create_dd_report(
     site_name: str,
     drive_folder_url: str,
     report_data: dict[str, Any],
+    isp_file_id: str = "",
 ) -> dict[str, Any]:
     """Create a completed DD report Google Doc for a site.
 
     Copies the master DD report template to the site's Drive folder, names it
     "[Site Name] DD Report - [MM/DD/YYYY]", then fills all {{PLACEHOLDER}} tokens
     using Google Docs API replaceAllText in a single batchUpdate call.
+
+    If ``isp_file_id`` is provided, the ISP PDF's floorplan image is extracted and
+    embedded inline at the ``{{q2.floorplan_image}}`` placeholder position.
 
     The report_data dict should follow the full DD report schema with nested sections:
     meta, exec_summary, q1, q2, q3, q4, appendix. All nested keys are flattened using
@@ -1362,6 +1467,7 @@ async def create_dd_report(
         site_name: Site name used for the report document title.
         drive_folder_url: Google Drive folder URL for the site (report is saved here).
         report_data: Nested dict with all report sections and field values.
+        isp_file_id: Optional Google Drive file ID of the ISP PDF for floorplan extraction.
 
     Returns:
         Dict with the URL of the newly created DD report Google Doc.
@@ -1441,6 +1547,13 @@ async def create_dd_report(
         replacements, unmatched, unfilled = normalize_report_data(
             report_data, site_name=site_name.strip(), report_date=today_str,
         )
+        # Collapse consecutive newlines in scope_of_work to prevent stray numbered
+        # paragraphs when the placeholder sits inside a numbered list in the template
+        if "q2.scope_of_work" in replacements:
+            replacements["q2.scope_of_work"] = re.sub(
+                r"\n{2,}", "\n", replacements["q2.scope_of_work"]
+            )
+
         # Inject the generated doc URL (not in the agent's report_data)
         replacements.setdefault("meta.drive_folder_url", doc_url or "")
 
@@ -1451,8 +1564,33 @@ async def create_dd_report(
         if unmatched:
             logger.warning("Unmatched agent keys (no template token): %s", unmatched)
 
+        # Step 2b: Auto-populate M1 Property Acquired subfolder link
+        if "q2.renderings_link" not in replacements:
+            try:
+                subfolders = gc.list_subfolders(folder_id)
+                m1_folder = next(
+                    (sf for sf in subfolders if "m1" in sf.get("name", "").lower()),
+                    None,
+                )
+                if m1_folder and m1_folder.get("webViewLink"):
+                    replacements["q2.renderings_link"] = m1_folder["webViewLink"]
+                    logger.info("Auto-populated M1 folder link: %s", m1_folder["webViewLink"])
+                else:
+                    replacements.setdefault(
+                        "q2.renderings_link",
+                        "[Not found — no M1 subfolder in site Drive folder]",
+                    )
+            except Exception as e:
+                logger.warning("Failed to look up M1 subfolder: %s", e)
+                replacements.setdefault(
+                    "q2.renderings_link",
+                    "[Not found — could not search for M1 subfolder]",
+                )
+
         # Step 3: Build and apply replaceAllText batch update
-        replace_requests = build_replace_all_text_requests(replacements)
+        # Exclude floorplan_image — handled separately via image insertion
+        text_replacements = {k: v for k, v in replacements.items() if k != "q2.floorplan_image"}
+        replace_requests = build_replace_all_text_requests(text_replacements)
 
         if replace_requests:
             gc.batch_update_document(doc_id, replace_requests)
@@ -1461,6 +1599,12 @@ async def create_dd_report(
             )
         else:
             logger.warning("No placeholder replacements to apply — report_data may be empty")
+
+        # Step 4: Embed floorplan image from ISP PDF at {{q2.floorplan_image}}
+        floorplan_inserted = _embed_floorplan_image(
+            gc, doc_id=doc_id, folder_id=folder_id,
+            isp_file_id=isp_file_id, site_name=site_name,
+        )
 
         logger.info("DD report created successfully: %s", doc_url)
 
@@ -1567,6 +1711,12 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             dt = f.get("doc_type", "unknown")
             if dt in files_by_type and files_by_type[dt] is None:
                 files_by_type[dt] = f
+            elif dt in files_by_type and files_by_type[dt] is not None:
+                # Prefer PDF over converted Google Doc
+                existing_mime = files_by_type[dt].get("mimeType", "")
+                new_mime = f.get("mimeType", "")
+                if existing_mime != PDF_MIME and new_mime == PDF_MIME:
+                    files_by_type[dt] = f
 
         # 4. LLM classification for unknown site folder files if docs are still missing
         still_missing = [
@@ -1713,6 +1863,190 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
         return {
             "status": "error",
             "error": "check_report_completeness failed",
+            "message": str(e),
+        }
+
+
+@mcp.tool()
+async def get_site_comments(site_name_or_id: str) -> dict[str, Any]:
+    """Retrieve Wrike record comments for a site, grouped by suggested report section.
+
+    Comments are classified into report sections (q1, q2, q3, q4, appendix, general)
+    using keyword matching. Useful for incorporating pre-app meeting notes, vendor
+    updates, and other contextual information into the DD report.
+
+    Args:
+        site_name_or_id: Site name, Wrike record ID, or Wrike permalink URL.
+
+    Returns:
+        Dict with comments grouped by section, plus a flat list of all comments.
+    """
+    logger.info("Tool called: get_site_comments — %s", site_name_or_id)
+
+    if not site_name_or_id or not site_name_or_id.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "site_name_or_id must be a non-empty string",
+        }
+
+    try:
+        record = find_site_record(site_name_or_id=site_name_or_id)
+        if not record:
+            return {
+                "status": "error",
+                "error": "Site record not found",
+                "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
+            }
+
+        record_id = record.get("id")
+        if not record_id:
+            return {"status": "error", "error": "No record ID", "message": "Record has no ID."}
+
+        comments = get_record_comments(record_id=record_id)
+
+        if not comments:
+            return {
+                "status": "success",
+                "site_title": record.get("title", site_name_or_id),
+                "comment_count": 0,
+                "by_section": {},
+                "all_comments": [],
+                "message": f"No comments found on Wrike record for '{record.get('title', site_name_or_id)}'.",
+            }
+
+        # Group by section
+        by_section: dict[str, list[dict[str, Any]]] = {}
+        for c in comments:
+            section = classify_comment_to_section(c["text"])
+            by_section.setdefault(section, []).append(c)
+
+        return {
+            "status": "success",
+            "site_title": record.get("title", site_name_or_id),
+            "comment_count": len(comments),
+            "by_section": by_section,
+            "all_comments": comments,
+            "message": (
+                f"Found {len(comments)} comment(s) on '{record.get('title', site_name_or_id)}'. "
+                f"Sections: {', '.join(sorted(by_section.keys()))}."
+            ),
+        }
+
+    except Exception as e:
+        logger.error("get_site_comments failed: %s", e)
+        return {
+            "status": "error",
+            "error": "get_site_comments failed",
+            "message": str(e),
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MatterBot integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+MATTERBOT_BASE_URL = "https://matterbot-1819903979408.us-central1.run.app"
+MATTERBOT_TIMEOUT_SECONDS = 30
+
+
+@mcp.tool()
+async def generate_marketing_pack(
+    space_sid: str,
+    space_name: str,
+    tier: str = "standard",
+    max_rooms: int = 0,
+    room_types: str = "",
+) -> dict[str, Any]:
+    """Trigger MatterBot to generate a marketing rendering pack for a site.
+
+    Fires a request to the MatterBot service which produces room-by-room
+    marketing images from a Matterport scan. The rendered images are deposited
+    into the site's M1 Property Acquired subfolder in Google Drive.
+
+    This is fire-and-forget — MatterBot processes asynchronously. The images
+    will appear in the Drive folder once generation completes (typically 5-15
+    minutes depending on room count and tier).
+
+    Args:
+        space_sid: Matterport space SID (from the scan URL or Wrike record).
+        space_name: Space / site name (used for Drive folder matching).
+        tier: Rendering quality tier — "standard" or "premium".
+        max_rooms: Maximum rooms to render. 0 = service default (~12).
+        room_types: Comma-separated room type filter (e.g., "classroom,commons,gym").
+            Empty string = all room types.
+
+    Returns:
+        Dict with status and the request URL that was fired.
+    """
+    logger.info(
+        "Tool called: generate_marketing_pack — space_sid=%s, space_name=%s, tier=%s",
+        space_sid, space_name, tier,
+    )
+
+    if not space_sid or not space_sid.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "space_sid must be a non-empty string (Matterport space SID).",
+        }
+    if not space_name or not space_name.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "space_name must be a non-empty string.",
+        }
+    if tier not in ("standard", "premium"):
+        return {
+            "status": "error",
+            "error": "Invalid tier",
+            "message": f"tier must be 'standard' or 'premium', got '{tier}'.",
+        }
+
+    url = f"{MATTERBOT_BASE_URL}/api/batch/generate-marketing-pack/{space_sid.strip()}"
+    params: dict[str, str | int] = {"space_name": space_name.strip()}
+    if tier != "standard":
+        params["tier"] = tier
+    if max_rooms > 0:
+        params["max_rooms"] = max_rooms
+    if room_types.strip():
+        params["room_types"] = room_types.strip()
+
+    try:
+        resp = requests.get(url, params=params, timeout=MATTERBOT_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+
+        logger.info(
+            "MatterBot marketing pack triggered: %s (status=%d)",
+            url, resp.status_code,
+        )
+
+        return {
+            "status": "success",
+            "message": (
+                f"Marketing pack generation triggered for '{space_name.strip()}' "
+                f"(tier={tier}). Images will appear in the site's M1 folder "
+                "once MatterBot finishes processing (typically 5-15 minutes)."
+            ),
+            "request_url": resp.url,
+            "http_status": resp.status_code,
+        }
+
+    except requests.Timeout:
+        logger.warning("MatterBot request timed out for space %s", space_sid)
+        return {
+            "status": "error",
+            "error": "MatterBot timeout",
+            "message": (
+                f"MatterBot did not respond within {MATTERBOT_TIMEOUT_SECONDS}s. "
+                "The service may be starting up — retry in a minute."
+            ),
+        }
+    except requests.RequestException as e:
+        logger.error("MatterBot request failed: %s", e)
+        return {
+            "status": "error",
+            "error": "MatterBot request failed",
             "message": str(e),
         }
 
