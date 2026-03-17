@@ -46,10 +46,11 @@ with open('.gcp-saved-tokens.json', 'w') as f:
 
 # Also create client_secrets.json for compatibility
 secrets = {
-    'web': {
+    'installed': {
         'client_id': os.environ['OAUTH_CLIENT_ID'],
         'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
-        'auth_uri': 'https://accounts.google.com/o/oauth2/v2/auth',
+        'redirect_uris': ['http://localhost'],
+        'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
         'token_uri': 'https://oauth2.googleapis.com/token',
     }
 }

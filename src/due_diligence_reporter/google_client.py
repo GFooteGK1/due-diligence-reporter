@@ -51,8 +51,8 @@ class GoogleClient:
                 credentials = None
 
         if not credentials or not credentials.valid:
-            if credentials and credentials.expired and credentials.refresh_token:
-                logger.info("Refreshing expired credentials")
+            if credentials and credentials.refresh_token:
+                logger.info("Refreshing credentials (token missing or expired)")
                 credentials.refresh(Request())
             else:
                 logger.info("Starting OAuth flow — browser window will open")
