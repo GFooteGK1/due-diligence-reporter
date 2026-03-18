@@ -1370,7 +1370,7 @@ def _find_floorplan_png_in_isp_folder(
     if not isp_folder_id:
         return None
 
-    files = gc.list_files_in_folder(isp_folder_id)
+    files = gc.list_files_recursive(isp_folder_id, max_depth=2)
     needles = [t.lower() for t in match_terms if t]
 
     png_files = [
@@ -1379,13 +1379,22 @@ def _find_floorplan_png_in_isp_folder(
         or f.get("name", "").lower().endswith(".png")
     ]
 
+    logger.info(
+        "ISP folder: %d total files, %d PNGs, matching against: %s",
+        len(files), len(png_files), needles,
+    )
+
     for f in png_files:
         fname = f.get("name", "").lower()
         if any(needle in fname for needle in needles):
             logger.info("Found floorplan PNG in ISP folder: %s", f.get("name"))
             return f
 
-    logger.info("No floorplan PNG found in ISP folder for terms: %s", needles)
+    if png_files:
+        logger.info(
+            "PNG files in ISP folder (no match): %s",
+            [f.get("name") for f in png_files[:10]],
+        )
     return None
 
 
