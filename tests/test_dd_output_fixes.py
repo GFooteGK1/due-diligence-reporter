@@ -181,7 +181,7 @@ class TestEmbedFloorplanImage:
 
     def _make_mock_gc(self, *, png_files: list[dict[str, Any]] | None = None) -> MagicMock:
         gc = MagicMock()
-        gc.list_files_recursive.return_value = png_files or []
+        gc.list_files_recursive.return_value = png_files if png_files is not None else []
         gc.make_file_public.return_value = None
         gc.get_document.return_value = {
             "body": {

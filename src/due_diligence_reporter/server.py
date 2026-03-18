@@ -1357,12 +1357,13 @@ _MAX_IMAGE_WIDTH_PT = 450  # Google Doc printable width is ~468pt with 1" margin
 _MAX_IMAGE_HEIGHT_PT = 350
 
 
-def _find_floorplan_png_in_isp_folder(
+def _find_floorplan_image_in_isp_folder(
     gc: GoogleClient,
     match_terms: list[str],
 ) -> dict[str, Any] | None:
-    """Search the shared ISP folder for a PNG floorplan matching the site.
+    """Search the shared ISP folder for a floorplan image matching the site.
 
+    Looks for PNG or JPEG files whose name contains any of the match terms.
     Returns the Drive file dict or ``None``.
     """
     settings = get_settings()
@@ -1373,28 +1374,34 @@ def _find_floorplan_png_in_isp_folder(
     files = gc.list_files_recursive(isp_folder_id, max_depth=2)
     needles = [t.lower() for t in match_terms if t]
 
-    png_files = [
+    _IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg"}
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+
+    image_files = [
         f for f in files
-        if f.get("mimeType") == "image/png"
-        or f.get("name", "").lower().endswith(".png")
+        if f.get("mimeType", "") in _IMAGE_MIMES
+        or any(f.get("name", "").lower().endswith(ext) for ext in _IMAGE_EXTS)
     ]
 
     logger.info(
-        "ISP folder: %d total files, %d PNGs, matching against: %s",
-        len(files), len(png_files), needles,
+        "ISP folder: %d total files, %d images, matching against: %s",
+        len(files), len(image_files), needles,
     )
 
-    for f in png_files:
+    for f in image_files:
         fname = f.get("name", "").lower()
         if any(needle in fname for needle in needles):
-            logger.info("Found floorplan PNG in ISP folder: %s", f.get("name"))
+            logger.info("Found floorplan image in ISP folder: %s (mime=%s)", f.get("name"), f.get("mimeType"))
             return f
 
-    if png_files:
+    # Log what images exist for debugging when no match is found
+    if image_files:
         logger.info(
-            "PNG files in ISP folder (no match): %s",
-            [f.get("name") for f in png_files[:10]],
+            "Image files in ISP folder (no match): %s",
+            [f.get("name") for f in image_files[:10]],
         )
+    else:
+        logger.info("No image files found in ISP folder at all")
     return None
 
 
@@ -1406,9 +1413,9 @@ def _embed_floorplan_image(
     site_name: str,
     site_address: str | None = None,
 ) -> bool:
-    """Find the floorplan PNG in the ISP folder and embed it in the report.
+    """Find the floorplan image in the ISP folder and embed it in the report.
 
-    Searches the shared ISP folder for a ``.png`` file matching the site name,
+    Searches the shared ISP folder for a PNG/JPEG image matching the site name,
     makes it publicly readable, then inserts it at the ``{{q2.floorplan_image}}``
     placeholder via Google Docs ``insertInlineImage``.
 
@@ -1419,10 +1426,10 @@ def _embed_floorplan_image(
 
     try:
         match_terms = _build_site_match_terms(site_name, site_address)
-        png_file = _find_floorplan_png_in_isp_folder(gc, match_terms)
+        image_file = _find_floorplan_image_in_isp_folder(gc, match_terms)
 
-        if png_file:
-            file_id = png_file.get("id", "")
+        if image_file:
+            file_id = image_file.get("id", "")
             if not file_id:
                 raise RuntimeError("PNG file has no ID")
 
@@ -1460,7 +1467,7 @@ def _embed_floorplan_image(
                 inserted = True
                 logger.info(
                     "Inserted floorplan PNG '%s' into doc %s",
-                    png_file.get("name"), doc_id,
+                    image_file.get("name"), doc_id,
                 )
             else:
                 logger.warning(
@@ -1475,7 +1482,7 @@ def _embed_floorplan_image(
     # Fallback: replace placeholder with sourced gap label
     if not inserted:
         fallback_requests = build_replace_all_text_requests(
-            {"q2.floorplan_image": "[Not found — floorplan PNG not in ISP shared folder]"}
+            {"q2.floorplan_image": "[Not found — floorplan image not in ISP shared folder]"}
         )
         try:
             gc.batch_update_document(doc_id, fallback_requests)
