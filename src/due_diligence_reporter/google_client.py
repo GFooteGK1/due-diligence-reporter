@@ -351,6 +351,25 @@ class GoogleClient:
             logger.error("Failed to batch update document %s: %s", document_id, error)
             raise RuntimeError(f"Failed to batch update document: {error}") from error
 
+    def make_file_public(self, file_id: str) -> None:
+        """Grant 'anyone with the link' read access to a Drive file.
+
+        Required before using the file's URI with Google Docs
+        ``insertInlineImage``, which fetches the image server-side without
+        OAuth credentials.
+        """
+        logger.info("Setting public read permission on file: %s", file_id)
+        try:
+            self.drive_service.permissions().create(
+                fileId=file_id,
+                body={"type": "anyone", "role": "reader"},
+                fields="id",
+                supportsAllDrives=True,
+            ).execute()
+        except HttpError as error:
+            logger.error("Failed to make file %s public: %s", file_id, error)
+            raise RuntimeError(f"Failed to set public permission: {error}") from error
+
     def get_document(self, document_id: str) -> dict[str, Any]:
         """Retrieve the full Google Docs document structure (body, lists, etc.).
 

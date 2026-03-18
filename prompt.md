@@ -362,9 +362,9 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 - `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list (if ISP was found)
 
 ### Step 6 — Generate the report
-Call `create_dd_report(site_name, drive_folder_url, report_data, isp_file_id)` with the assembled data dict. Pass the ISP file ID from the Step 2 readiness check (from `files.isp.id`) so the floorplan image can be extracted and embedded. See "Report Data Schema" section below for exact token keys.
+Call `create_dd_report(site_name, drive_folder_url, report_data)` with the assembled data dict. See "Report Data Schema" section below for exact token keys.
 
-The M1 Property Acquired subfolder link (`q2.renderings_link`) is auto-populated from the site's Drive folder — you do not need to set it manually.
+The M1 Property Acquired subfolder link (`q2.renderings_link`) is auto-populated from the site's Drive folder. The floorplan image (`q2.floorplan_image`) is automatically found by searching the shared ISP folder for a `.png` file matching the site name — you do not need to set either of these manually.
 
 ### Step 7 — Verify completeness
 Call `check_report_completeness(doc_id)`. If any `{{token}}` placeholders remain, attempt to fill them. `[Not found — ...]` labels are acceptable and not blocking.
@@ -480,7 +480,7 @@ You may pass keys as either:
 | `q2.as_built_links` | Links to as-built drawings if available | Drive folder |
 | `q2.lidar_summary` | Matterport/LiDAR scan summary | Matterport file |
 | `q2.renderings_link` | Link to M1 Property Acquired subfolder | Auto-populated from Drive |
-| `q2.floorplan_image` | Floorplan image from ISP PDF | Auto-embedded from `isp_file_id` |
+| `q2.floorplan_image` | Floorplan image PNG from ISP folder | Auto-embedded by matching site name |
 
 ### q3 — Cost estimate
 

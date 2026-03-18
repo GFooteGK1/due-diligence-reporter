@@ -17,7 +17,6 @@ from due_diligence_reporter.server import (
     _embed_floorplan_image,
 )
 from due_diligence_reporter.utils import (
-    extract_floorplan_image_from_isp,
     find_text_index_in_doc,
 )
 from due_diligence_reporter.wrike import classify_comment_to_section
@@ -66,14 +65,6 @@ class TestM1SubfolderSchema:
 class TestFloorplanImage:
     def test_floorplan_image_token_exists(self) -> None:
         assert "q2.floorplan_image" in TEMPLATE_TOKEN_SET
-
-    def test_extract_from_empty_bytes(self) -> None:
-        result = extract_floorplan_image_from_isp(b"")
-        assert result is None
-
-    def test_extract_from_invalid_pdf(self) -> None:
-        result = extract_floorplan_image_from_isp(b"not a pdf")
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +177,12 @@ class TestCommentClassification:
 # ---------------------------------------------------------------------------
 
 class TestEmbedFloorplanImage:
-    """Integration tests for the extracted _embed_floorplan_image helper."""
+    """Integration tests for the _embed_floorplan_image helper (PNG lookup flow)."""
 
-    def _make_mock_gc(self, *, image_data: tuple[bytes, str] | None = None) -> MagicMock:
+    def _make_mock_gc(self, *, png_files: list[dict[str, Any]] | None = None) -> MagicMock:
         gc = MagicMock()
-        gc.download_file_bytes.return_value = b"fake-pdf-bytes"
-        gc.upload_file_to_folder.return_value = {"id": "img123", "webViewLink": "https://drive.google.com/file/d/img123/view"}
+        gc.list_files_in_folder.return_value = png_files or []
+        gc.make_file_public.return_value = None
         gc.get_document.return_value = {
             "body": {
                 "content": [
@@ -211,93 +202,108 @@ class TestEmbedFloorplanImage:
         gc.batch_update_document.return_value = {}
         return gc
 
-    @patch("due_diligence_reporter.server.extract_floorplan_image_from_isp")
-    def test_successful_insertion_uses_direct_download_uri(self, mock_extract: MagicMock) -> None:
-        mock_extract.return_value = (b"image-bytes", "image/png")
-        gc = self._make_mock_gc()
+    @patch("due_diligence_reporter.server.get_settings")
+    def test_successful_insertion_uses_lh3_uri(self, mock_settings: MagicMock) -> None:
+        mock_settings.return_value.isp_folder_id = "isp_folder"
+        gc = self._make_mock_gc(png_files=[
+            {"id": "png123", "name": "Alpha Keller Floorplan.png", "mimeType": "image/png"},
+        ])
 
         result = _embed_floorplan_image(
-            gc, doc_id="doc1", folder_id="folder1",
-            isp_file_id="isp1", site_name="Test Site",
+            gc, doc_id="doc1", folder_id="folder1", site_name="Alpha Keller",
         )
 
         assert result is True
-        # Verify the URI passed to insertInlineImage is a direct download link
         batch_call_args = gc.batch_update_document.call_args_list[-1]
         requests_list = batch_call_args[0][1]
         insert_req = requests_list[1]["insertInlineImage"]
-        assert "uc?id=img123&export=download" in insert_req["uri"]
-        assert "webViewLink" not in insert_req["uri"]
+        assert insert_req["uri"] == "https://lh3.googleusercontent.com/d/png123"
 
-    @patch("due_diligence_reporter.server.extract_floorplan_image_from_isp")
-    def test_jpeg_image_gets_jpg_extension(self, mock_extract: MagicMock) -> None:
-        mock_extract.return_value = (b"jpeg-bytes", "image/jpeg")
-        gc = self._make_mock_gc()
-
-        _embed_floorplan_image(
-            gc, doc_id="doc1", folder_id="folder1",
-            isp_file_id="isp1", site_name="Test Site",
-        )
-
-        upload_call = gc.upload_file_to_folder.call_args
-        filename = upload_call[0][1]
-        assert filename.endswith(".jpg")
-        assert not filename.endswith(".png")
-
-    @patch("due_diligence_reporter.server.extract_floorplan_image_from_isp")
-    def test_png_image_gets_png_extension(self, mock_extract: MagicMock) -> None:
-        mock_extract.return_value = (b"png-bytes", "image/png")
-        gc = self._make_mock_gc()
+    @patch("due_diligence_reporter.server.get_settings")
+    def test_make_file_public_called(self, mock_settings: MagicMock) -> None:
+        mock_settings.return_value.isp_folder_id = "isp_folder"
+        gc = self._make_mock_gc(png_files=[
+            {"id": "png123", "name": "Alpha Keller Floorplan.png", "mimeType": "image/png"},
+        ])
 
         _embed_floorplan_image(
-            gc, doc_id="doc1", folder_id="folder1",
-            isp_file_id="isp1", site_name="Test Site",
+            gc, doc_id="doc1", folder_id="folder1", site_name="Alpha Keller",
         )
 
-        upload_call = gc.upload_file_to_folder.call_args
-        filename = upload_call[0][1]
-        assert filename.endswith(".png")
+        gc.make_file_public.assert_called_once_with("png123")
 
-    @patch("due_diligence_reporter.server.extract_floorplan_image_from_isp")
-    def test_no_image_found_returns_false_and_sets_fallback(self, mock_extract: MagicMock) -> None:
-        mock_extract.return_value = None
-        gc = self._make_mock_gc()
+    @patch("due_diligence_reporter.server.get_settings")
+    def test_width_within_page_margins(self, mock_settings: MagicMock) -> None:
+        mock_settings.return_value.isp_folder_id = "isp_folder"
+        gc = self._make_mock_gc(png_files=[
+            {"id": "png123", "name": "Keller.png", "mimeType": "image/png"},
+        ])
+
+        _embed_floorplan_image(
+            gc, doc_id="doc1", folder_id="folder1", site_name="Alpha Keller",
+        )
+
+        batch_call_args = gc.batch_update_document.call_args_list[-1]
+        insert_req = batch_call_args[0][1][1]["insertInlineImage"]
+        width = insert_req["objectSize"]["width"]["magnitude"]
+        assert width == 450  # max width within margins
+
+    @patch("due_diligence_reporter.server.get_settings")
+    def test_no_png_found_returns_false_with_gap_label(self, mock_settings: MagicMock) -> None:
+        mock_settings.return_value.isp_folder_id = "isp_folder"
+        gc = self._make_mock_gc(png_files=[])
 
         result = _embed_floorplan_image(
-            gc, doc_id="doc1", folder_id="folder1",
-            isp_file_id="isp1", site_name="Test Site",
+            gc, doc_id="doc1", folder_id="folder1", site_name="Alpha Keller",
         )
 
         assert result is False
-        # Fallback should replace placeholder with gap label
         fallback_call = gc.batch_update_document.call_args
         req = fallback_call[0][1][0]["replaceAllText"]
-        assert "Floorplan image not available" in req["replaceText"]
+        assert "Not found" in req["replaceText"]
+        assert "ISP" in req["replaceText"]
 
-    def test_empty_isp_file_id_returns_false(self) -> None:
-        gc = self._make_mock_gc()
+    @patch("due_diligence_reporter.server.get_settings")
+    def test_ignores_non_png_files(self, mock_settings: MagicMock) -> None:
+        mock_settings.return_value.isp_folder_id = "isp_folder"
+        gc = self._make_mock_gc(png_files=[
+            {"id": "pdf1", "name": "Alpha Keller ISP.pdf", "mimeType": "application/pdf"},
+        ])
+
+        result = _embed_floorplan_image(
+            gc, doc_id="doc1", folder_id="folder1", site_name="Alpha Keller",
+        )
+
+        assert result is False  # PDF is not a PNG
+
+    @patch("due_diligence_reporter.server.get_settings")
+    def test_matches_by_city_name(self, mock_settings: MagicMock) -> None:
+        mock_settings.return_value.isp_folder_id = "isp_folder"
+        gc = self._make_mock_gc(png_files=[
+            {"id": "png456", "name": "Boca Raton floorplan.png", "mimeType": "image/png"},
+        ])
 
         result = _embed_floorplan_image(
             gc, doc_id="doc1", folder_id="folder1",
-            isp_file_id="", site_name="Test Site",
+            site_name="Alpha Boca Raton",
         )
 
-        assert result is False
-        gc.download_file_bytes.assert_not_called()
+        assert result is True
 
-    @patch("due_diligence_reporter.server.extract_floorplan_image_from_isp")
-    def test_download_failure_falls_back_gracefully(self, mock_extract: MagicMock) -> None:
-        gc = self._make_mock_gc()
-        gc.download_file_bytes.side_effect = RuntimeError("Download failed")
+    @patch("due_diligence_reporter.server.get_settings")
+    def test_api_failure_falls_back_gracefully(self, mock_settings: MagicMock) -> None:
+        mock_settings.return_value.isp_folder_id = "isp_folder"
+        gc = self._make_mock_gc(png_files=[
+            {"id": "png123", "name": "Keller.png", "mimeType": "image/png"},
+        ])
+        gc.make_file_public.side_effect = RuntimeError("Permission denied")
 
         result = _embed_floorplan_image(
-            gc, doc_id="doc1", folder_id="folder1",
-            isp_file_id="isp1", site_name="Test Site",
+            gc, doc_id="doc1", folder_id="folder1", site_name="Alpha Keller",
         )
 
         assert result is False
-        # Fallback placeholder replacement should still be attempted
-        assert gc.batch_update_document.called
+        assert gc.batch_update_document.called  # fallback attempted
 
 
 # ---------------------------------------------------------------------------

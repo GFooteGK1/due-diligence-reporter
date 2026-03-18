@@ -18,7 +18,6 @@ from .google_client import GoogleClient
 from .report_schema import normalize_report_data
 from .utils import (
     build_replace_all_text_requests,
-    extract_floorplan_image_from_isp,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     find_text_index_in_doc,
@@ -1354,86 +1353,120 @@ async def get_cost_estimate(
     }
 
 
+_MAX_IMAGE_WIDTH_PT = 450  # Google Doc printable width is ~468pt with 1" margins
+_MAX_IMAGE_HEIGHT_PT = 350
+
+
+def _find_floorplan_png_in_isp_folder(
+    gc: GoogleClient,
+    match_terms: list[str],
+) -> dict[str, Any] | None:
+    """Search the shared ISP folder for a PNG floorplan matching the site.
+
+    Returns the Drive file dict or ``None``.
+    """
+    settings = get_settings()
+    isp_folder_id = settings.isp_folder_id
+    if not isp_folder_id:
+        return None
+
+    files = gc.list_files_in_folder(isp_folder_id)
+    needles = [t.lower() for t in match_terms if t]
+
+    png_files = [
+        f for f in files
+        if f.get("mimeType") == "image/png"
+        or f.get("name", "").lower().endswith(".png")
+    ]
+
+    for f in png_files:
+        fname = f.get("name", "").lower()
+        if any(needle in fname for needle in needles):
+            logger.info("Found floorplan PNG in ISP folder: %s", f.get("name"))
+            return f
+
+    logger.info("No floorplan PNG found in ISP folder for terms: %s", needles)
+    return None
+
+
 def _embed_floorplan_image(
     gc: GoogleClient,
     *,
     doc_id: str,
     folder_id: str,
-    isp_file_id: str,
     site_name: str,
+    site_address: str | None = None,
 ) -> bool:
-    """Extract floorplan image from ISP PDF and embed it in the report document.
+    """Find the floorplan PNG in the ISP folder and embed it in the report.
+
+    Searches the shared ISP folder for a ``.png`` file matching the site name,
+    makes it publicly readable, then inserts it at the ``{{q2.floorplan_image}}``
+    placeholder via Google Docs ``insertInlineImage``.
 
     Returns True if the image was successfully inserted, False otherwise.
-    On failure, replaces the ``{{q2.floorplan_image}}`` placeholder with a
-    sourced gap label so no raw token remains in the document.
+    On failure, replaces the placeholder with a sourced gap label.
     """
     inserted = False
 
-    if isp_file_id:
-        try:
-            isp_bytes = gc.download_file_bytes(isp_file_id)
-            image_result = extract_floorplan_image_from_isp(isp_bytes)
+    try:
+        match_terms = _build_site_match_terms(site_name, site_address)
+        png_file = _find_floorplan_png_in_isp_folder(gc, match_terms)
 
-            if image_result:
-                image_bytes, image_mime = image_result
-                ext = "jpg" if image_mime == "image/jpeg" else "png"
-                uploaded_img = gc.upload_file_to_folder(
-                    folder_id,
-                    f"{site_name.strip()} - Floorplan.{ext}",
-                    image_bytes,
-                    mime_type=image_mime,
-                )
-                # Build a direct download URI from the file ID — webViewLink is
-                # an HTML page, not a fetchable image resource.
-                file_id = uploaded_img.get("id", "")
-                image_uri = (
-                    f"https://drive.google.com/uc?id={file_id}&export=download"
-                )
+        if png_file:
+            file_id = png_file.get("id", "")
+            if not file_id:
+                raise RuntimeError("PNG file has no ID")
 
-                doc_struct = gc.get_document(doc_id)
-                doc_body = doc_struct.get("body", {})
-                placeholder = "{{q2.floorplan_image}}"
-                idx = find_text_index_in_doc(doc_body, placeholder)
+            # Make file publicly readable — insertInlineImage fetches
+            # the URI server-side with no OAuth credentials.
+            gc.make_file_public(file_id)
+            image_uri = f"https://lh3.googleusercontent.com/d/{file_id}"
 
-                if idx is not None and file_id:
-                    image_requests: list[dict[str, Any]] = [
-                        {
-                            "deleteContentRange": {
-                                "range": {
-                                    "startIndex": idx,
-                                    "endIndex": idx + len(placeholder),
-                                }
+            doc_struct = gc.get_document(doc_id)
+            doc_body = doc_struct.get("body", {})
+            placeholder = "{{q2.floorplan_image}}"
+            idx = find_text_index_in_doc(doc_body, placeholder)
+
+            if idx is not None:
+                image_requests: list[dict[str, Any]] = [
+                    {
+                        "deleteContentRange": {
+                            "range": {
+                                "startIndex": idx,
+                                "endIndex": idx + len(placeholder),
                             }
-                        },
-                        {
-                            "insertInlineImage": {
-                                "uri": image_uri,
-                                "location": {"index": idx},
-                                "objectSize": {
-                                    "width": {"magnitude": 500, "unit": "PT"},
-                                    "height": {"magnitude": 350, "unit": "PT"},
-                                },
-                            }
-                        },
-                    ]
-                    gc.batch_update_document(doc_id, image_requests)
-                    inserted = True
-                    logger.info("Inserted floorplan image into document %s", doc_id)
-                else:
-                    logger.warning(
-                        "Could not find {{q2.floorplan_image}} placeholder in doc %s",
-                        doc_id,
-                    )
+                        }
+                    },
+                    {
+                        "insertInlineImage": {
+                            "uri": image_uri,
+                            "location": {"index": idx},
+                            "objectSize": {
+                                "width": {"magnitude": _MAX_IMAGE_WIDTH_PT, "unit": "PT"},
+                            },
+                        }
+                    },
+                ]
+                gc.batch_update_document(doc_id, image_requests)
+                inserted = True
+                logger.info(
+                    "Inserted floorplan PNG '%s' into doc %s",
+                    png_file.get("name"), doc_id,
+                )
             else:
-                logger.info("No floorplan image found in ISP PDF")
-        except Exception as e:
-            logger.warning("Failed to embed floorplan image: %s", e)
+                logger.warning(
+                    "Could not find {{q2.floorplan_image}} placeholder in doc %s",
+                    doc_id,
+                )
+        else:
+            logger.info("No floorplan PNG found for site '%s'", site_name)
+    except Exception as e:
+        logger.warning("Failed to embed floorplan image: %s", e)
 
     # Fallback: replace placeholder with sourced gap label
     if not inserted:
         fallback_requests = build_replace_all_text_requests(
-            {"q2.floorplan_image": "[Floorplan image not available]"}
+            {"q2.floorplan_image": "[Not found — floorplan PNG not in ISP shared folder]"}
         )
         try:
             gc.batch_update_document(doc_id, fallback_requests)
@@ -1443,12 +1476,34 @@ def _embed_floorplan_image(
     return inserted
 
 
+def _fit_image_to_page(px_w: int, px_h: int) -> tuple[int, int]:
+    """Scale pixel dimensions to fit within Google Doc page margins.
+
+    Returns ``(width_pt, height_pt)`` that preserves aspect ratio and fits
+    within ``_MAX_IMAGE_WIDTH_PT`` x ``_MAX_IMAGE_HEIGHT_PT``.
+    """
+    if px_w <= 0 or px_h <= 0:
+        return (_MAX_IMAGE_WIDTH_PT, _MAX_IMAGE_HEIGHT_PT)
+
+    aspect = px_w / px_h
+
+    # Start at max width, compute proportional height
+    width_pt = _MAX_IMAGE_WIDTH_PT
+    height_pt = round(width_pt / aspect)
+
+    # If height exceeds cap, scale down from max height instead
+    if height_pt > _MAX_IMAGE_HEIGHT_PT:
+        height_pt = _MAX_IMAGE_HEIGHT_PT
+        width_pt = round(height_pt * aspect)
+
+    return (width_pt, height_pt)
+
+
 @mcp.tool()
 async def create_dd_report(
     site_name: str,
     drive_folder_url: str,
     report_data: dict[str, Any],
-    isp_file_id: str = "",
 ) -> dict[str, Any]:
     """Create a completed DD report Google Doc for a site.
 
@@ -1456,8 +1511,9 @@ async def create_dd_report(
     "[Site Name] DD Report - [MM/DD/YYYY]", then fills all {{PLACEHOLDER}} tokens
     using Google Docs API replaceAllText in a single batchUpdate call.
 
-    If ``isp_file_id`` is provided, the ISP PDF's floorplan image is extracted and
-    embedded inline at the ``{{q2.floorplan_image}}`` placeholder position.
+    The floorplan image is automatically found by searching the shared ISP folder
+    for a ``.png`` file matching the site name, and embedded inline at the
+    ``{{q2.floorplan_image}}`` placeholder position.
 
     The report_data dict should follow the full DD report schema with nested sections:
     meta, exec_summary, q1, q2, q3, q4, appendix. All nested keys are flattened using
@@ -1467,7 +1523,6 @@ async def create_dd_report(
         site_name: Site name used for the report document title.
         drive_folder_url: Google Drive folder URL for the site (report is saved here).
         report_data: Nested dict with all report sections and field values.
-        isp_file_id: Optional Google Drive file ID of the ISP PDF for floorplan extraction.
 
     Returns:
         Dict with the URL of the newly created DD report Google Doc.
@@ -1600,10 +1655,10 @@ async def create_dd_report(
         else:
             logger.warning("No placeholder replacements to apply — report_data may be empty")
 
-        # Step 4: Embed floorplan image from ISP PDF at {{q2.floorplan_image}}
+        # Step 4: Embed floorplan PNG from ISP shared folder
         floorplan_inserted = _embed_floorplan_image(
             gc, doc_id=doc_id, folder_id=folder_id,
-            isp_file_id=isp_file_id, site_name=site_name,
+            site_name=site_name,
         )
 
         logger.info("DD report created successfully: %s", doc_url)
