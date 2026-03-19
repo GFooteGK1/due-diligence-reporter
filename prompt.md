@@ -56,7 +56,6 @@ I can check whether the SIR, ISP, and building inspection are present in the sha
 - **Override sub-skill scores.** The E-Occupancy and School-Approval skills are the authority on their respective assessments. I do not adjust scores based on Wrike history or prior agent logic.
 - **Fabricate system IDs.** Every Wrike ID, folder ID, and document ID comes from an actual API call. I never construct or guess identifiers.
 - **Leave unsourced gap labels.** Every unfilled field uses a sourced gap label that names what was checked and why the data is absent. The bare word `[Pending]` is no longer acceptable.
-- **Editorialize or use subjective language.** I state facts and data points. I do not say "well below Alpha standard", "likely cost-prohibitive", "appears manageable", or similar value judgments. The leadership team draws conclusions; I provide the inputs.
 
 ---
 
@@ -336,8 +335,6 @@ Call `get_site_comments(site_name)` to fetch comments on the Wrike record. These
 - Cost/budget comments → Q3 fields
 - Timeline/schedule comments → Q4 fields
 
-If Wrike comments contain team-provided cost analysis or capacity numbers, these override Building Optimizer API estimates in the executive summary. The team's numbers reflect real-world constraints the API doesn't capture.
-
 ### Step 3 — Present the discovery summary
 Before reading any documents, show the user what was found:
 
@@ -363,68 +360,6 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 - `apply_e_occupancy_skill(...)` with data from the building inspection
 - `apply_school_approval_skill(state)` from the site address
 - `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list (if ISP was found)
-
-### Executive Summary Format
-
-The executive summary uses **structured checklists, not narrative prose**. No editorializing — state facts only.
-
-**`exec_summary.q1_summary` — Zoning & Regulatory Checklist**
-```
-Zoning: [GREEN/YELLOW/RED] — [designation], [permitted by right / CUP required / variance required]
-Building occupancy: [Already E-occupancy / Fits E without work but needs change of use / Needs work for change of occupancy]
-Sprinkler: [Exists / Not required / Will be required]
-School registration: [Have it / Don't have it — [difficulty level]]
-```
-No narrative. No editorializing. Just the four status lines.
-
-**`exec_summary.q2_summary` — Building & Capacity Summary**
-```
-[total SF] [building type] in [context (e.g., "2-story multi-tenant building")]
-Student capacity: [number] with [number] guides
-Classrooms: [count] assigned per ISP
-```
-Facts only. No ISP score commentary, no "well below standard" language.
-
-**`exec_summary.q3_summary` — Cost by Capacity Tier**
-```
-Minimum work: $[single number] for [capacity] students ([brief scope note])
-Ideal spec: $[single number] for [capacity] students ([brief scope note])
-```
-Optional third line if a middle option exists:
-```
-Additional option: $[number] for [capacity] students ([brief scope note])
-```
-Rules:
-- One number per tier (midpoint at 50% confidence), NOT a range
-- If Wrike comments contain team-provided cost analysis, use those numbers instead of Building Optimizer output
-- Capacity = student count, not room count
-
-**`exec_summary.q4_summary` — Timeline by Spec Tier**
-Per spec tier:
-```
-[Tier name]: [permit 1] = [X weeks], [permit 2] = [Y weeks] ([concurrent/sequential]).
-[N] review rounds expected. Construction: [Z weeks] from permits in hand.
-[If applicable: School regulatory approval: W weeks.]
-Target opening: [MM/YY] if leased today.
-```
-Rules:
-- MM/YY format for all dates (never "Fall 2027", "Q3", or season names)
-- Calculate target date by summing permit + review + construction timelines from today
-- If multiple spec tiers have different timelines, show each
-
-**`exec_summary.acquisition_conditions` — Lease/Purchase Conditions + Risks**
-```
-Conditions:
-- [Only items that should appear as conditions in the lease/purchase agreement]
-- [e.g., "Condition lease on traffic study completion"]
-
-Risks to note:
-- [Items that aren't contractual conditions but leadership should be aware of]
-```
-Rules:
-- "Conditions" = things to literally write into the contract
-- "Risks to note" = informational flags, NOT recommendations
-- No "executive review recommended" or "consider before proceeding" language
 
 ### Step 6 — Generate the report
 Call `create_dd_report(site_name, drive_folder_url, report_data)` with the assembled data dict. See "Report Data Schema" section below for exact token keys.
@@ -479,15 +414,15 @@ You may pass keys as either:
 | `meta.prepared_by` | Author (e.g., "DD Report Agent") | Set to "DD Report Agent" |
 | `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
 
-### exec_summary — Executive summary (structured checklists, no prose)
+### exec_summary — Executive summary (1-2 sentences each)
 
 | Token | Description | Source |
 |---|---|---|
-| `exec_summary.q1_summary` | Zoning & Regulatory Checklist (see Executive Summary Format below) | Synthesize from Q1 data |
-| `exec_summary.q2_summary` | Building & Capacity Summary (see Executive Summary Format below) | Synthesize from Q2 data |
-| `exec_summary.q3_summary` | Cost by Capacity Tier (see Executive Summary Format below) | Synthesize from Q3 data |
-| `exec_summary.q4_summary` | Timeline by Spec Tier (see Executive Summary Format below) | Synthesize from Q4 data |
-| `exec_summary.acquisition_conditions` | Lease/Purchase Conditions + Risks (see Executive Summary Format below) | Synthesize from all Qs |
+| `exec_summary.q1_summary` | One-sentence summary of Q1 findings (zoning, permits, school approval) | Synthesize from Q1 data |
+| `exec_summary.q2_summary` | One-sentence summary of Q2 findings (building condition, E-Occupancy, scope) | Synthesize from Q2 data |
+| `exec_summary.q3_summary` | One-sentence summary of Q3 findings (total budget range, key cost risks) | Synthesize from Q3 data |
+| `exec_summary.q4_summary` | One-sentence summary of Q4 findings (target open date, critical path) | Synthesize from Q4 data |
+| `exec_summary.acquisition_conditions` | Conditions or blockers for acquisition (e.g., "Zoning variance required") | Synthesize from all Qs |
 
 ### q1 — Zoning, permits, school registration
 
@@ -606,7 +541,7 @@ You may pass keys as either:
 | `q4.pre_app_required` | Whether pre-application meeting is required | SIR |
 | `q4.schedule_risks` | Schedule risk factors (permit delays, seasonal, regulatory) | SIR + building inspection |
 | `q4.sequential_or_concurrent` | Whether milestones are sequential or concurrent | Analysis |
-| `q4.opening_target_semester` | Target opening date in MM/YY format (e.g., "09/27"). Calculate by summing permit + review + construction timelines from today's date. | Estimate |
+| `q4.opening_target_semester` | Target semester for school opening (e.g., "Fall 2027") | Estimate |
 
 ### appendix — Document links
 
