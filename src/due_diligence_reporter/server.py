@@ -15,7 +15,7 @@ from mcp.server import FastMCP
 from .classifier import classify_by_keywords, classify_document, match_file_to_site_llm
 from .config import get_settings
 from .google_client import GoogleClient
-from .report_schema import normalize_report_data
+from .report_schema import normalize_report_data, normalize_report_data_v2
 from .utils import (
     build_replace_all_text_requests,
     extract_folder_id_from_url,
@@ -1520,6 +1520,7 @@ async def create_dd_report(
     site_name: str,
     drive_folder_url: str,
     report_data: dict[str, Any],
+    version: int = 1,
 ) -> dict[str, Any]:
     """Create a completed DD report Google Doc for a site.
 
@@ -1539,6 +1540,7 @@ async def create_dd_report(
         site_name: Site name used for the report document title.
         drive_folder_url: Google Drive folder URL for the site (report is saved here).
         report_data: Nested dict with all report sections and field values.
+        version: Report version (1 = current template, 2 = V2 template). Defaults to 1.
 
     Returns:
         Dict with the URL of the newly created DD report Google Doc.
@@ -1575,21 +1577,27 @@ async def create_dd_report(
         }
 
     settings = get_settings()
-    template_id = settings.dd_template_google_doc_id
+    if version == 2:
+        template_id = settings.dd_template_v2_google_doc_id
+        template_label = "DD_TEMPLATE_V2_GOOGLE_DOC_ID"
+    else:
+        template_id = settings.dd_template_google_doc_id
+        template_label = "DD_TEMPLATE_GOOGLE_DOC_ID"
 
     if not template_id:
         return {
             "status": "error",
             "error": "Missing configuration",
             "message": (
-                "DD_TEMPLATE_GOOGLE_DOC_ID is not configured. "
+                f"{template_label} is not configured. "
                 "Set this environment variable to the Google Doc template ID."
             ),
         }
 
     # Build the document name
     today_str = datetime.now().strftime("%m/%d/%Y")
-    doc_name = f"{site_name.strip()} DD Report - {today_str}"
+    version_tag = " V2" if version == 2 else ""
+    doc_name = f"{site_name.strip()}{version_tag} DD Report - {today_str}"
 
     logger.info("Creating DD report: %s", doc_name)
 
@@ -1615,7 +1623,8 @@ async def create_dd_report(
         logger.info("Copied template to new document: %s (id=%s)", doc_name, doc_id)
 
         # Step 2: Normalize report_data → template-aligned replacements
-        replacements, unmatched, unfilled = normalize_report_data(
+        normalizer = normalize_report_data_v2 if version == 2 else normalize_report_data
+        replacements, unmatched, unfilled = normalizer(
             report_data, site_name=site_name.strip(), report_date=today_str,
         )
         # Collapse consecutive newlines in scope_of_work to prevent stray numbered

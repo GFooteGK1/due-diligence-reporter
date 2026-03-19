@@ -149,6 +149,63 @@ TEMPLATE_TOKEN_SET: frozenset[str] = frozenset(TEMPLATE_TOKENS)
 # Only semantically correct renames.  If the canonical token already has a
 # value in the flattened data the alias is silently skipped (no overwrite).
 
+# ---------------------------------------------------------------------------
+# V2 template tokens (executive one-pager — 17+ tokens)
+# ---------------------------------------------------------------------------
+
+TEMPLATE_TOKENS_V2: list[str] = [
+    # ── meta (same as V1) ─────────────────────────────────────────────────
+    "meta.site_name",
+    "meta.city_state_zip",
+    "meta.school_type",
+    "meta.marketing_name",
+    "meta.report_date",
+    "meta.prepared_by",
+    "meta.drive_folder_url",
+    # ── exec (structured executive summary) ───────────────────────────────
+    "exec.c_answer",
+    "exec.c_permitting",
+    "exec.c_occupancy",
+    "exec.c_zoning",
+    "exec.c_conditions",
+    "exec.d_cost_summary",
+    "exec.f_ready_mm_yy",
+    "exec.f_timeline",
+    "exec.acquisition_conditions",
+    # ── sources (document links) ──────────────────────────────────────────
+    "sources.sir_link",
+    "sources.inspection_link",
+    "sources.isp_link",
+]
+
+TEMPLATE_TOKEN_V2_SET: frozenset[str] = frozenset(TEMPLATE_TOKENS_V2)
+
+# V2 aliases — map V1-style agent keys to V2 canonical tokens
+AGENT_KEY_ALIASES_V2: dict[str, str] = {
+    # ── top-level / site.* → meta.* ──────────────────────────────────────
+    "site_name":            "meta.site_name",
+    "report_date":          "meta.report_date",
+    "doc_url":              "meta.drive_folder_url",
+    "site.name":            "meta.site_name",
+    "site.city_state_zip":  "meta.city_state_zip",
+    "site.address":         "meta.city_state_zip",
+    "site.school_type":     "meta.school_type",
+    "site.marketing_name":  "meta.marketing_name",
+    "site.prepared_by":     "meta.prepared_by",
+    # ── exec_summary.* → exec.* (V1 agent output → V2 tokens) ───────────
+    "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
+    # ── appendix.* → sources.* ───────────────────────────────────────────
+    "appendix.sir_link":                   "sources.sir_link",
+    "appendix.inspection_link":            "sources.inspection_link",
+    "appendix.building_inspection_link":   "sources.inspection_link",
+    "appendix.floorplan_viability_link":   "sources.isp_link",
+    "appendix.isp_link":                   "sources.isp_link",
+}
+
+# ---------------------------------------------------------------------------
+# V1 Agent key aliases → canonical template token
+# ---------------------------------------------------------------------------
+
 AGENT_KEY_ALIASES: dict[str, str] = {
     # ── top-level convenience keys → meta ─────────────────────────────────
     "site_name":            "meta.site_name",
@@ -270,5 +327,53 @@ def normalize_report_data(
         logger.info("Unmatched agent keys: %s", sorted(unmatched_keys))
     if unfilled_tokens:
         logger.debug("Unfilled template tokens: %s", sorted(unfilled_tokens))
+
+    return replacements, sorted(unmatched_keys), sorted(unfilled_tokens)
+
+
+def normalize_report_data_v2(
+    report_data: dict[str, Any],
+    site_name: str,
+    report_date: str,
+) -> tuple[dict[str, str], list[str], list[str]]:
+    """Normalize agent output into V2 template-ready replacements.
+
+    Same logic as :func:`normalize_report_data` but uses the V2 token set
+    and V2 alias map (executive one-pager format).
+    """
+    # 1. Flatten
+    flat = flatten_report_data_for_replacement(report_data)
+
+    # 2. Inject defaults
+    flat.setdefault("meta.site_name", site_name.strip())
+    flat.setdefault("meta.report_date", report_date)
+
+    # 3. Apply V2 aliases
+    for alias, canonical in AGENT_KEY_ALIASES_V2.items():
+        if alias in flat and canonical not in flat:
+            flat[canonical] = flat[alias]
+
+    # 4. Filter → only V2 template tokens
+    replacements: dict[str, str] = {}
+    unmatched_keys: list[str] = []
+
+    for key, value in flat.items():
+        if key in TEMPLATE_TOKEN_V2_SET:
+            replacements[key] = value
+        else:
+            unmatched_keys.append(key)
+
+    unfilled_tokens = [t for t in TEMPLATE_TOKENS_V2 if t not in replacements]
+
+    logger.info(
+        "normalize_report_data_v2: %d replacements, %d unmatched, %d unfilled",
+        len(replacements),
+        len(unmatched_keys),
+        len(unfilled_tokens),
+    )
+    if unmatched_keys:
+        logger.info("Unmatched agent keys (V2): %s", sorted(unmatched_keys))
+    if unfilled_tokens:
+        logger.debug("Unfilled V2 tokens: %s", sorted(unfilled_tokens))
 
     return replacements, sorted(unmatched_keys), sorted(unfilled_tokens)

@@ -37,10 +37,14 @@ class Settings(BaseSettings):
         description="OAuth scopes for Drive, Docs, and Gmail operations",
     )
 
-    # DD Report Template
+    # DD Report Templates
     dd_template_google_doc_id: str = Field(
         "",
-        description="Google Doc ID of the master DD report template",
+        description="Google Doc ID of the V1 DD report template",
+    )
+    dd_template_v2_google_doc_id: str = Field(
+        "",
+        description="Google Doc ID of the V2 DD report template",
     )
 
     # Google Drive root folder containing all site folders

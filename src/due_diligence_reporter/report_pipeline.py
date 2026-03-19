@@ -125,13 +125,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "create_dd_report",
-        "description": "Create a completed DD report Google Doc. The report_data dict must use exact template token keys (e.g. 'q1.zoning_designation', 'q3.structural_low'). Copy report_data_fields from skill tools directly into report_data. See prompt.md 'Report Data Schema' for the full token list.",
+        "description": "Create a completed DD report Google Doc. The report_data dict must use exact template token keys (e.g. 'q1.zoning_designation', 'q3.structural_low'). Copy report_data_fields from skill tools directly into report_data. See prompt.md 'Report Data Schema' for the full token list. Pass version=2 for V2 format.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "site_name": {"type": "string"},
                 "drive_folder_url": {"type": "string"},
                 "report_data": {"type": "object"},
+                "version": {"type": "integer", "default": 1, "description": "Report version (1 = V1 template, 2 = V2 template)"},
             },
             "required": ["site_name", "drive_folder_url", "report_data"],
         },
