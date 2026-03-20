@@ -83,22 +83,28 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 def find_text_index_in_doc(doc_body: dict[str, Any], search_text: str) -> int | None:
     """Find the start character index of ``search_text`` in a Google Docs body.
 
-    Walks the document body content elements to locate the text.
-    Returns the start index or ``None`` if not found.
+    Concatenates all textRun content within each paragraph before searching,
+    so URLs or other strings split across multiple consecutive textRun
+    elements are still found.  Returns the absolute start index or ``None``.
     """
     for element in doc_body.get("content", []):
         paragraph = element.get("paragraph")
         if not paragraph:
             continue
+        # Collect all textRun elements with their start indices
+        runs: list[tuple[int, str]] = []
         for pe in paragraph.get("elements", []):
             text_run = pe.get("textRun")
-            if not text_run:
-                continue
-            content = text_run.get("content", "")
-            offset = content.find(search_text)
-            if offset >= 0:
-                start_index = pe.get("startIndex", 0)
-                return start_index + offset
+            if text_run:
+                runs.append((pe.get("startIndex", 0), text_run.get("content", "")))
+        if not runs:
+            continue
+        # Concatenate and search the full paragraph text
+        para_start = runs[0][0]
+        full_text = "".join(content for _, content in runs)
+        offset = full_text.find(search_text)
+        if offset >= 0:
+            return para_start + offset
 
     return None
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from due_diligence_reporter.utils import build_hyperlink_requests
+from due_diligence_reporter.utils import build_hyperlink_requests, find_text_index_in_doc
 
 
 # Minimal Google Docs body structure for testing
 def _make_doc_body(texts: list[tuple[int, str]]) -> dict:
-    """Build a minimal doc body with paragraph elements at given indices."""
+    """Build a minimal doc body with one paragraph per tuple (single textRun each)."""
     elements = []
     for start_idx, content in texts:
         elements.append({
@@ -20,6 +20,20 @@ def _make_doc_body(texts: list[tuple[int, str]]) -> dict:
                 ]
             }
         })
+    return {"content": elements}
+
+
+def _make_doc_body_split_runs(runs_per_para: list[list[tuple[int, str]]]) -> dict:
+    """Build a doc body where each paragraph has multiple textRun elements."""
+    elements = []
+    for runs in runs_per_para:
+        para_elements = []
+        for start_idx, content in runs:
+            para_elements.append({
+                "startIndex": start_idx,
+                "textRun": {"content": content},
+            })
+        elements.append({"paragraph": {"elements": para_elements}})
     return {"content": elements}
 
 
@@ -125,3 +139,56 @@ class TestBuildHyperlinkRequests:
         requests = build_hyperlink_requests(doc_body, replacements, frozenset())
 
         assert requests == []
+
+    def test_url_split_across_text_runs(self):
+        """A URL split across multiple textRun elements is still hyperlinked."""
+        # Google Docs splits "https://drive.google.com/drive/folders/abc123" into two runs
+        doc_body = _make_doc_body_split_runs([
+            [
+                (10, "https://drive.google.com/drive/"),
+                (40, "folders/abc123"),
+            ],
+        ])
+        full_url = "https://drive.google.com/drive/folders/abc123"
+        replacements = {
+            "meta.drive_folder_url": full_url,
+        }
+
+        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+
+        assert len(requests) == 1
+        req = requests[0]["updateTextStyle"]
+        assert req["range"]["startIndex"] == 10
+        assert req["range"]["endIndex"] == 10 + len(full_url)
+        assert req["textStyle"]["link"]["url"] == full_url
+
+
+class TestFindTextIndexSplitRuns:
+    """Tests for find_text_index_in_doc with split textRuns."""
+
+    def test_finds_text_in_single_run(self):
+        doc_body = _make_doc_body([(5, "hello world")])
+        assert find_text_index_in_doc(doc_body, "world") == 11
+
+    def test_finds_text_spanning_two_runs(self):
+        doc_body = _make_doc_body_split_runs([
+            [
+                (10, "https://drive.google."),
+                (31, "com/folders/abc"),
+            ],
+        ])
+        assert find_text_index_in_doc(doc_body, "https://drive.google.com/folders/abc") == 10
+
+    def test_returns_none_when_not_found(self):
+        doc_body = _make_doc_body([(0, "no match here")])
+        assert find_text_index_in_doc(doc_body, "missing") is None
+
+    def test_finds_text_in_middle_of_split_runs(self):
+        doc_body = _make_doc_body_split_runs([
+            [
+                (0, "prefix "),
+                (7, "https://example"),
+                (22, ".com/path"),
+            ],
+        ])
+        assert find_text_index_in_doc(doc_body, "https://example.com/path") == 7

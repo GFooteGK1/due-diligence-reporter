@@ -1695,7 +1695,7 @@ async def create_dd_report(
             )
 
         # Inject the generated doc URL (not in the agent's report_data)
-        replacements.setdefault("meta.drive_folder_url", doc_url or "")
+        replacements.setdefault("meta.drive_folder_url", drive_folder_url)
 
         logger.info(
             "Normalization: %d replacements, %d unmatched keys, %d unfilled tokens",
@@ -2251,7 +2251,7 @@ async def save_skill_report(
             "message": f"Could not extract folder ID from: {drive_folder_url}",
         }
 
-    gc = _get_google_client()
+    gc = _make_google_client()
     today_str = datetime.now().strftime("%m/%d/%Y")
     doc_name = f"{skill_name} Assessment - {site_name}"
 
