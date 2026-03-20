@@ -130,7 +130,7 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
 
     if skip_readiness:
         logger.info("--skip-readiness: bypassing readiness gate, calling agent directly")
-        agent_result = run_dd_report_agent(site_title, system_prompt, report_version=2)
+        agent_result = run_dd_report_agent(site_title, system_prompt)
 
         print(f"\n{'=' * 60}")
         print(f"V2 Report — {site_title}")
@@ -148,7 +148,6 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
         gc, site_title, drive_folder_url, match_terms,
         shared_cache, system_prompt, settings,
         p1_email=p1_email, site_address=address,
-        report_version=2,
     )
 
     # Post to Google Chat if configured

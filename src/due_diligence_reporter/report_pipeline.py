@@ -131,14 +131,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "create_dd_report",
-        "description": "Create a completed DD report Google Doc. The report_data dict must use exact template token keys (e.g. 'q1.zoning_designation', 'q3.structural_low'). Copy report_data_fields from skill tools directly into report_data. See prompt.md 'Report Data Schema' for the full token list. Pass version=2 for V2 format.",
+        "description": "Create a completed DD report Google Doc. The report_data dict must use exact V2 template token keys (e.g. 'exec.c_zoning', 'sources.sir_link'). Copy report_data_fields from skill tools directly into report_data. Pass token_evidence for source traceability.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "site_name": {"type": "string"},
                 "drive_folder_url": {"type": "string"},
                 "report_data": {"type": "object"},
-                "version": {"type": "integer", "default": 2, "description": "Report version (1 = V1 template, 2 = V2 template)"},
+                "token_evidence": {"type": "object", "description": "Optional dict mapping token names to raw source excerpts for the trace report"},
             },
             "required": ["site_name", "drive_folder_url", "report_data"],
         },
@@ -402,16 +402,12 @@ def check_site_readiness_direct(
 def run_dd_report_agent(
     site_title: str,
     system_prompt: str,
-    *,
-    report_version: int = 1,
 ) -> dict[str, Any]:
     """Run Claude as a tool-calling agent to generate one DD report.
 
     Args:
         site_title: Site name to generate the report for.
         system_prompt: Full system prompt text.
-        report_version: Force this version on create_dd_report calls (1 or 2).
-            Prevents the agent from accidentally using the wrong template.
 
     Returns a dict with keys: success, doc_id, doc_url, error.
     """
@@ -425,7 +421,7 @@ def run_dd_report_agent(
     trace = ReportTrace(
         site_name=site_title,
         started_at=datetime.now(timezone.utc).isoformat(),
-        prompt_version=report_version,
+        prompt_version=2,
     )
     run_start = time.monotonic()
 
@@ -469,9 +465,6 @@ def run_dd_report_agent(
         for tool_use in tool_uses:
             logger.info("Executing tool: %s", tool_use.name)
             tool_input = tool_use.input
-            # Force report version — prevents agent from accidentally using wrong template
-            if tool_use.name == "create_dd_report":
-                tool_input = {**tool_input, "version": report_version}
 
             t0 = time.monotonic()
             tool_error: str | None = None
@@ -669,7 +662,6 @@ def process_site_pipeline(
     settings: Settings,
     p1_email: str | None = None,
     site_address: str | None = None,
-    report_version: int = 1,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -713,7 +705,7 @@ def process_site_pipeline(
 
     # Case 3: All docs present, no report yet — generate
     logger.info("'%s' — all docs present, generating report...", site_title)
-    agent_result = run_dd_report_agent(site_title, system_prompt, report_version=report_version)
+    agent_result = run_dd_report_agent(site_title, system_prompt)
 
     if not agent_result.get("success"):
         err = agent_result.get("error", "unknown error")

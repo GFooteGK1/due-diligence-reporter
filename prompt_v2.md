@@ -437,7 +437,7 @@ Rules:
 - No "executive review recommended" or "consider before proceeding" language
 
 ### Step 6 — Generate the V2 report
-Call `create_dd_report(site_name, drive_folder_url, report_data, version=2, token_evidence=evidence)` with the assembled data dict. **Always pass `version=2`** to use the V2 template. See "V2 Report Data Schema" section below for exact token keys.
+Call `create_dd_report(site_name, drive_folder_url, report_data, token_evidence=evidence)` with the assembled data dict. See "V2 Report Data Schema" section below for exact token keys.
 
 **`token_evidence`** — As you read each source document, build a parallel dict that records the raw excerpt supporting each token value. This goes into the report trace so reviewers can verify every field back to its source. Example:
 
@@ -472,7 +472,7 @@ If a document was not found in Step 2, use sourced gap labels for every field th
 
 ---
 
-## V2 Report Data Schema (create_dd_report with version=2)
+## Report Data Schema (create_dd_report)
 
 The V2 report is an **executive one-pager**. 23 tokens total. The agent still reads all documents and runs all skill tools — the difference is in what gets written to the template.
 
