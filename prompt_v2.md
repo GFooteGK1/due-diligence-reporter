@@ -480,27 +480,27 @@ You may pass keys as either:
 
 ### exec — "Can we do this?" card (pick-menu dimensions)
 
-Each dimension uses a **fixed option menu**. Pick exactly one option per field based on the data.
+Each dimension uses a **fixed option menu**. Pick exactly one option per field based on the data from the specified source document.
 
-| Token | Options (pick one) |
-|---|---|
-| `exec.c_answer` | `YES` / `NO` / `CONDITIONAL` |
-| `exec.c_edreg` | `Not required` / `Required and have done` / `Required have not done` |
-| `exec.c_occupancy` | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
-| `exec.c_zoning` | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
+| Token | Source | Options (pick one) |
+|---|---|---|
+| `exec.c_answer` | Agent (synthesize from all sources) | `YES` / `NO` / `CONDITIONAL` |
+| `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
+| `exec.c_occupancy` | E-Occupancy skill (uses Building Inspection data) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
+| `exec.c_edreg` | School Approval skill | `Not required` / `Required and have done` / `Required have not done` |
 
 ### exec — Cost / Capacity / Timeline grid (bare values)
 
 The template provides labels — the agent fills only the values. No dollar signs in capacity fields, no units in cost fields beyond the `$`.
 
-| Token | Format | Example |
-|---|---|---|
-| `exec.e_mvp_capacity` | Integer (students) | `36` |
-| `exec.e_ideal_capacity` | Integer (students) | `54` |
-| `exec.e_mvp_cost` | Dollar amount | `$185,000` |
-| `exec.e_ideal_cost` | Dollar amount | `$290,000` |
-| `exec.f_mvp_ready` | MM/YY | `01/27` |
-| `exec.f_ideal_ready` | MM/YY | `04/27` |
+| Token | Source | Format | Example |
+|---|---|---|---|
+| `exec.e_mvp_capacity` | ISP (tier analysis student count) | Integer (students) | `36` |
+| `exec.e_ideal_capacity` | ISP (tier analysis student count) | Integer (students) | `54` |
+| `exec.e_mvp_cost` | ISP (room list → `get_cost_estimate`) | Dollar amount | `$185,000` |
+| `exec.e_ideal_cost` | ISP (room list → `get_cost_estimate`) | Dollar amount | `$290,000` |
+| `exec.f_mvp_ready` | Agent (SIR timelines + construction estimate) | MM/YY | `01/27` |
+| `exec.f_ideal_ready` | Agent (SIR timelines + construction estimate) | MM/YY | `04/27` |
 
 Rules:
 - Cost = single midpoint number (50% confidence), NOT a range. Wrike comments override API numbers.
@@ -519,9 +519,9 @@ These 3 tokens are computed automatically by `create_dd_report` from the MVP/Ide
 
 ### exec — Conditions
 
-| Token | Format |
-|---|---|
-| `exec.acquisition_conditions` | Free-text bullet list |
+| Token | Source | Format |
+|---|---|---|
+| `exec.acquisition_conditions` | Agent (synthesize from all sources) | Free-text bullet list |
 
 Format:
 ```
