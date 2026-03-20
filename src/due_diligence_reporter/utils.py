@@ -215,11 +215,22 @@ def build_replace_all_text_requests(
     return requests_list
 
 
+class HyperlinkResult:
+    """Result of building hyperlink requests, with per-token outcomes."""
+
+    __slots__ = ("requests", "found_tokens", "not_found_tokens")
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.found_tokens: list[str] = []
+        self.not_found_tokens: list[str] = []
+
+
 def build_hyperlink_requests(
     doc_body: dict[str, Any],
     replacements: dict[str, str],
     link_tokens: frozenset[str],
-) -> list[dict[str, Any]]:
+) -> HyperlinkResult:
     """Build ``updateTextStyle`` requests to hyperlink URL values in the doc.
 
     For each token in *link_tokens* whose replacement value starts with
@@ -228,8 +239,11 @@ def build_hyperlink_requests(
 
     Must be called **after** ``replaceAllText`` has been applied — pass a
     fresh ``doc_body`` from ``get_document()``.
+
+    Returns a :class:`HyperlinkResult` with the requests list plus
+    ``found_tokens`` and ``not_found_tokens`` for diagnostics.
     """
-    requests_list: list[dict[str, Any]] = []
+    result = HyperlinkResult()
 
     for token in link_tokens:
         url = replacements.get(token, "")
@@ -242,13 +256,15 @@ def build_hyperlink_requests(
                 "Hyperlink: URL for token '%s' not found in doc body (url=%s)",
                 token, url[:80],
             )
+            result.not_found_tokens.append(token)
             continue
 
         logger.debug(
             "Hyperlink: found token '%s' at index %d (url=%s)",
             token, start_idx, url[:80],
         )
-        requests_list.append({
+        result.found_tokens.append(token)
+        result.requests.append({
             "updateTextStyle": {
                 "range": {
                     "startIndex": start_idx,
@@ -261,4 +277,4 @@ def build_hyperlink_requests(
             }
         })
 
-    return requests_list
+    return result

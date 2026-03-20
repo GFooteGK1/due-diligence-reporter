@@ -52,14 +52,16 @@ class TestBuildHyperlinkRequests:
             "sources.sir_link": "https://drive.google.com/file/abc",
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+        result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
-        assert len(requests) == 1
-        req = requests[0]["updateTextStyle"]
+        assert len(result.requests) == 1
+        req = result.requests[0]["updateTextStyle"]
         assert req["range"]["startIndex"] == 10
         assert req["range"]["endIndex"] == 10 + len("https://drive.google.com/file/abc")
         assert req["textStyle"]["link"]["url"] == "https://drive.google.com/file/abc"
         assert req["fields"] == "link"
+        assert result.found_tokens == ["sources.sir_link"]
+        assert result.not_found_tokens == []
 
     def test_skips_gap_labels(self):
         """Non-URL values (gap labels) are not hyperlinked."""
@@ -70,9 +72,11 @@ class TestBuildHyperlinkRequests:
             "sources.sir_link": "[Not found — SIR not yet in shared Drive folder]",
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+        result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
-        assert requests == []
+        assert result.requests == []
+        assert result.found_tokens == []
+        assert result.not_found_tokens == []
 
     def test_skips_empty_values(self):
         """Empty string values are not hyperlinked."""
@@ -81,9 +85,9 @@ class TestBuildHyperlinkRequests:
             "sources.sir_link": "",
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+        result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
-        assert requests == []
+        assert result.requests == []
 
     def test_skips_tokens_not_in_link_set(self):
         """Tokens not in the link_tokens set are ignored even if they contain URLs."""
@@ -94,9 +98,9 @@ class TestBuildHyperlinkRequests:
             "exec.c_answer": "https://example.com/something",
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+        result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
-        assert requests == []
+        assert result.requests == []
 
     def test_handles_multiple_links(self):
         """Multiple link tokens each produce their own request."""
@@ -108,11 +112,12 @@ class TestBuildHyperlinkRequests:
             "sources.isp_link": "https://drive.google.com/isp",
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+        result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
-        assert len(requests) == 2
-        urls = {r["updateTextStyle"]["textStyle"]["link"]["url"] for r in requests}
+        assert len(result.requests) == 2
+        urls = {r["updateTextStyle"]["textStyle"]["link"]["url"] for r in result.requests}
         assert urls == {"https://drive.google.com/sir", "https://drive.google.com/isp"}
+        assert len(result.found_tokens) == 2
 
     def test_url_not_found_in_doc_is_skipped(self):
         """If the URL text isn't found in the doc body, no request is produced."""
@@ -123,9 +128,11 @@ class TestBuildHyperlinkRequests:
             "sources.sir_link": "https://drive.google.com/missing",
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+        result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
-        assert requests == []
+        assert result.requests == []
+        assert result.not_found_tokens == ["sources.sir_link"]
+        assert result.found_tokens == []
 
     def test_empty_link_tokens_produces_empty(self):
         """An empty link_tokens set produces no requests."""
@@ -136,13 +143,12 @@ class TestBuildHyperlinkRequests:
             "sources.sir_link": "https://example.com",
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, frozenset())
+        result = build_hyperlink_requests(doc_body, replacements, frozenset())
 
-        assert requests == []
+        assert result.requests == []
 
     def test_url_split_across_text_runs(self):
         """A URL split across multiple textRun elements is still hyperlinked."""
-        # Google Docs splits "https://drive.google.com/drive/folders/abc123" into two runs
         doc_body = _make_doc_body_split_runs([
             [
                 (10, "https://drive.google.com/drive/"),
@@ -154,13 +160,14 @@ class TestBuildHyperlinkRequests:
             "meta.drive_folder_url": full_url,
         }
 
-        requests = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
+        result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
-        assert len(requests) == 1
-        req = requests[0]["updateTextStyle"]
+        assert len(result.requests) == 1
+        req = result.requests[0]["updateTextStyle"]
         assert req["range"]["startIndex"] == 10
         assert req["range"]["endIndex"] == 10 + len(full_url)
         assert req["textStyle"]["link"]["url"] == full_url
+        assert result.found_tokens == ["meta.drive_folder_url"]
 
 
 class TestFindTextIndexSplitRuns:

@@ -1744,14 +1744,55 @@ async def create_dd_report(
             logger.warning("No placeholder replacements to apply — report_data may be empty")
 
         # Step 3b: Hyperlink URL tokens (convert plain-text URLs to clickable links)
-        hyperlinks_applied = 0
-        hyperlinked_tokens: list[str] = []
+        link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
+        hyperlink_trace: dict[str, Any] = {
+            "candidates": {},
+            "found_in_doc": [],
+            "not_found_in_doc": [],
+            "missing_from_agent": [],
+            "non_url_values": {},
+            "unmapped_agent_urls": [],
+            "applied": 0,
+            "error": None,
+        }
+
+        # Pre-flight: which link tokens did the agent not provide at all?
+        missing_from_agent = [t for t in link_token_set if t not in text_replacements]
+        if missing_from_agent:
+            logger.warning(
+                "Hyperlinks: agent did not provide values for: %s", missing_from_agent,
+            )
+        hyperlink_trace["missing_from_agent"] = missing_from_agent
+
+        # Pre-flight: which link tokens have non-URL values?
+        non_url_values = {
+            k: v[:120] for k, v in text_replacements.items()
+            if k in link_token_set and not v.startswith("http")
+        }
+        if non_url_values:
+            logger.info("Hyperlinks: link tokens with non-URL values: %s", non_url_values)
+        hyperlink_trace["non_url_values"] = non_url_values
+
+        # Pre-flight: did the agent provide URLs under keys NOT in link_token_set?
+        unmapped_agent_urls = [
+            k for k, v in text_replacements.items()
+            if k not in link_token_set and v.startswith("http")
+        ]
+        if unmapped_agent_urls:
+            logger.warning(
+                "Hyperlinks: agent provided URLs under keys not in LINK_TOKENS: %s",
+                unmapped_agent_urls,
+            )
+        hyperlink_trace["unmapped_agent_urls"] = unmapped_agent_urls
+
+        # Build and apply hyperlinks
         try:
-            link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
             link_candidates = {
                 k: v for k, v in text_replacements.items()
                 if k in link_token_set and v.startswith("http")
             }
+            hyperlink_trace["candidates"] = {k: v[:200] for k, v in link_candidates.items()}
+
             if not link_candidates:
                 logger.info("Hyperlinks: no URL candidates found in link tokens")
             else:
@@ -1761,26 +1802,29 @@ async def create_dd_report(
                 )
                 doc_struct = gc.get_document(doc_id)
                 doc_body = doc_struct.get("body", {})
-                hyperlink_requests = build_hyperlink_requests(
+                hl_result = build_hyperlink_requests(
                     doc_body, link_candidates, link_token_set,
                 )
-                if not hyperlink_requests:
+                hyperlink_trace["found_in_doc"] = hl_result.found_tokens
+                hyperlink_trace["not_found_in_doc"] = hl_result.not_found_tokens
+
+                if not hl_result.requests:
                     logger.warning(
                         "Hyperlinks: URLs not found in doc body — "
                         "0 of %d candidates matched", len(link_candidates),
                     )
                 else:
-                    gc.batch_update_document(doc_id, hyperlink_requests)
-                    hyperlinks_applied = len(hyperlink_requests)
-                    hyperlinked_tokens = list(link_candidates.keys())
+                    gc.batch_update_document(doc_id, hl_result.requests)
+                    hyperlink_trace["applied"] = len(hl_result.requests)
                     logger.info(
                         "Applied %d hyperlinks to document %s: %s",
-                        hyperlinks_applied, doc_id, hyperlinked_tokens,
+                        hyperlink_trace["applied"], doc_id, hl_result.found_tokens,
                     )
         except Exception as e:
             logger.warning(
                 "Hyperlink insertion failed (report still usable): %s", e,
             )
+            hyperlink_trace["error"] = str(e)
 
         # Step 4: Embed floorplan PNG from ISP shared folder (V1 only)
         if version == 1:
@@ -1801,8 +1845,7 @@ async def create_dd_report(
             "replacements": {k: v[:200] for k, v in replacements.items()},
             "unmatched_keys": unmatched,
             "unfilled_tokens": unfilled,
-            "hyperlinks_applied": hyperlinks_applied,
-            "hyperlinked_tokens": hyperlinked_tokens,
+            "hyperlinks": hyperlink_trace,
         }
         try:
             trace_name = f"{site_name.strip()} Report Trace - {today_str.replace('/', '-')}.json"
@@ -1827,7 +1870,7 @@ async def create_dd_report(
             "replacements_applied": len(replace_requests),
             "unmatched_agent_keys": len(unmatched),
             "unfilled_template_tokens": len(unfilled),
-            "hyperlinks_applied": hyperlinks_applied,
+            "hyperlinks_applied": hyperlink_trace["applied"],
             "message": f"DD report created: {doc_url}",
         }
 
