@@ -1,8 +1,8 @@
 # Due Diligence Reporter — How It Works
 
-**Version:** 3.0.0
+**Version:** 4.0.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-03-03
+**Last Updated:** 2026-03-20
 
 ---
 
@@ -15,6 +15,54 @@ The Due Diligence Reporter is an AI agent powered by Claude that generates Site 
 3. **Daily Sweep (Safety Net — 9 AM)** — A scheduled script scans all Wrike Site Records in active DD stages. When a site has all three required documents (SIR, ISP, Building Inspection) and no existing report, it triggers full report generation. This catches anything the 15-min scan missed.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
+
+---
+
+## The V2 Report
+
+The V2 DD Report is a **structured executive one-pager** — not the multi-page narrative of V1. It uses structured checklists, pick-menu dimensions, and bare values instead of prose paragraphs.
+
+**28 template tokens** across three sections:
+
+| Section | Count | What it covers |
+|---------|-------|----------------|
+| **meta** | 7 | Site name, address, school type, marketing name, report date, prepared by, Drive folder link |
+| **exec** | 15 | "Can we do this?" card (4 pick-menu dimensions), cost/capacity/timeline grid (6 values + 3 server-computed deltas), lease conditions, risk notes |
+| **sources** | 6 | Links to SIR, Building Inspection, ISP, E-Occupancy Assessment, School Approval Assessment, Report Trace |
+
+### "Can we do this?" card
+
+Four dimensions, each a fixed pick-menu:
+
+| Dimension | Source | Options |
+|-----------|--------|---------|
+| `exec.c_answer` | Agent synthesis | YES / NO / CONDITIONAL |
+| `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
+| `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
+| `exec.c_edreg` | School Approval skill | Not required / Required and have done / Required have not done |
+
+### Cost / Capacity / Timeline grid
+
+Two tiers (MVP and Ideal) with server-computed deltas:
+
+| Row | MVP token | Ideal token | Delta (auto-computed) |
+|-----|-----------|-------------|----------------------|
+| Capacity | `exec.e_mvp_capacity` | `exec.e_ideal_capacity` | `exec.delta_capacity` |
+| Cost | `exec.e_mvp_cost` | `exec.e_ideal_cost` | `exec.delta_cost` |
+| Timeline | `exec.f_mvp_ready` | `exec.f_ideal_ready` | `exec.delta_ready` |
+
+Rules: cost = single midpoint number (not a range), timeline = MM/YY format only, Wrike comments override API numbers.
+
+### Conditions and Risk Notes
+
+Two separate tokens with distinct classification rules:
+
+| Token | Purpose | Classification test |
+|-------|---------|-------------------|
+| `exec.acquisition_conditions` | Contractual items for the lease/purchase agreement | "Would we walk away if this were not addressed before signing?" |
+| `exec.risk_notes` | Informational flags for budgeting/planning | "Is this something we'll handle during buildout or budget for?" |
+
+Both require per-bullet source citations.
 
 ---
 
@@ -34,7 +82,7 @@ The agent gathers facts. It does not make recommendations. The decision belongs 
 Human (chat)   │       report_pipeline.py  │  shared pipeline module
     │          │          ┌────────────────┘
     │          │          │
-    │  prompt.md          │  same tools, same prompt
+    │  prompt_v2.md       │  same tools, same prompt
     ▼          ▼          ▼
 Claude AI Agent ◄─────────┘
     │
@@ -42,7 +90,7 @@ Claude AI Agent ◄─────────┘
     ▼
 ┌──────────────────────────────────────────────────────────┐
 │  MCP Server  (FastMCP / Python)                          │
-│  dd-reporter — 10 tools                                  │
+│  dd-reporter — 13 tools                                  │
 │                                                          │
 │  Tools:                                                  │
 │  ├─ get_site_record          (Wrike lookup)              │
@@ -54,10 +102,13 @@ Claude AI Agent ◄─────────┘
 │  ├─ create_dd_report         (Template copy + fill)      │
 │  ├─ check_site_readiness     (Doc presence gate)         │
 │  ├─ check_report_completeness (Token scan)               │
+│  ├─ get_site_comments        (Wrike comments by section) │
+│  ├─ generate_marketing_pack  (MatterBot rendering)       │
+│  ├─ save_skill_report        (Publish assessment to Drive)│
 │  └─ send_dd_report_email     (Gmail SMTP)                │
 │                                                          │
 │  Report Schema:                                          │
-│  └─ report_schema.py         (108 tokens + alias map)    │
+│  └─ report_schema.py         (28 tokens + alias map)     │
 └──────────────┬───────────────────────────────────────────┘
                │
     ┌──────────┼──────────────────────────┐
@@ -73,7 +124,7 @@ Claude AI Agent ◄─────────┘
 
 **Script:** `scripts/scan_inbox.py`
 **Module:** `src/due_diligence_reporter/inbox_scanner.py`
-**Schedule:** Every 15 minutes, 8 AM–6 PM Central, Monday–Friday (GitHub Actions cron: `*/15 13-23 * * 1-5` UTC)
+**Schedule:** Every 15 minutes, 6 AM–8 PM Central, Monday–Friday
 **Workflow:** `.github/workflows/inbox-scan.yml`
 
 The inbox scanner is the primary trigger for report generation. When a vendor emails a SIR or Building Inspection to `edu.ops@trilogy.com`, the scanner picks it up within 15 minutes.
@@ -121,9 +172,9 @@ For each unique site that received an upload:
 
 ---
 
-## Document Detection — Dual Strategy
+## Document Detection — Three-Tier Strategy
 
-The system must find three source documents before generating a report. Documents can live in two places:
+The system must find three source documents before generating a report. Documents can live in two places.
 
 ### Primary: Shared Drive Folders
 
@@ -135,11 +186,21 @@ Three shared folders hold documents across all sites:
 | ISP (Instant School Plan) | `1E9RXgVeKxeITUdFw5lvyolCx6CJLEFUg` | `ISP_FOLDER_ID` |
 | Building Inspection | `15dfKaAnic9VRKhp_-vFSpTr7uPk_hhKo` | `BUILDING_INSPECTION_FOLDER_ID` |
 
-Files are matched by checking if any of the site's match terms (site title, city name, street number) appear as a case-insensitive substring in the filename.
+Files are matched by checking if any of the site's match terms (site title, city name, street number) appear as a case-insensitive substring in the filename. When substring matching fails, an LLM fallback (`match_file_to_site_llm()`) fuzzy-matches filenames to the site.
+
+**PDF mime preference:** When multiple files match for a doc type, `application/pdf` is preferred over `application/vnd.google-apps.document` (Drive auto-converts PDFs to Docs; the system wants the original).
 
 ### Fallback: Site's Own Drive Folder
 
-If a document isn't found in the shared folders, the system checks the site's root folder and its `01_Due Diligence` subfolder. Files are classified by keyword matching on the filename (`_classify_document_type`).
+If a document isn't found in the shared folders, the system searches the site's root folder recursively (`list_files_recursive(folder_id, max_depth=2)`). Files are classified using a three-tier classification pipeline in `classifier.py`:
+
+| Tier | Method | Cost |
+|------|--------|------|
+| 1 | Regex keyword matching (`classify_by_keywords`) | Free, instant |
+| 2 | GPT-4o-mini on filename (`classify_by_filename_llm`) | ~$0.001/call |
+| 3 | GPT-4o-mini on first-page PDF text (`classify_by_content_llm`) | ~$0.002/call |
+
+Only escalates when the previous tier returns unknown/low confidence. Falls back to regex if OpenAI is unavailable.
 
 ### Readiness Gate
 
@@ -159,7 +220,7 @@ ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_e
 
 **Inbox scan mode:** `scan_inbox.py` detects a new upload and triggers the pipeline for that specific site.
 
-**Daily sweep mode:** `daily_dd_check.py` fetches all Wrike Site Records, filters to active DD stages only ("2. Evaluating Potential Site (LOI)" and "3. Site Chosen, FTO in Progress"), pre-fetches the three shared Drive folders once, then checks each site's readiness.
+**Daily sweep mode:** `daily_dd_check.py` fetches all Wrike Site Records, filters to active DD stages only ("1. Looking for Sites" and "2. Evaluating Potential Sites (LOI)"), pre-fetches the three shared Drive folders once, then checks each site's readiness.
 
 ---
 
@@ -177,17 +238,29 @@ ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_e
 
 ---
 
-### Step 3 — Index the Site's Drive Folder
+### Step 3 — Check Document Availability
 
-**Tool:** `list_drive_documents(drive_folder_url, site_name)`
+**Tool:** `check_site_readiness(site_name)`
 
 **Activity:**
-1. Lists files in the root site folder and `01_Due Diligence` subfolder
-2. Classifies each file by `doc_type` (sir, isp, building_inspection, phase_i_esa, matterport, dd_report, unknown)
-3. Searches the three shared Drive folders for matching documents using the site's match terms
-4. Merges results — shared folder matches take priority
+1. Searches shared Drive folders for SIR, ISP, and Building Inspection using site match terms
+2. Falls back to recursive site folder search with three-tier classification
+3. Checks if a DD report already exists
+4. Returns presence booleans, file metadata, and missing doc list
 
-**Output:** Combined file list with `doc_type`, file ID, name, MIME type, and Drive link for each file.
+**Output:** `sir_found`, `isp_found`, `inspection_found`, `report_exists`, `files` dict with `name`/`id`/`webViewLink` per doc type, `missing_docs` list.
+
+---
+
+### Step 3.5 — Retrieve Wrike Comments
+
+**Tool:** `get_site_comments(site_name)`
+
+**Activity:**
+1. Fetches all comments on the Wrike site record
+2. Groups comments by suggested report section (q1, q2, q3, q4, appendix, general)
+
+**Key rule:** If Wrike comments contain team-provided cost analysis or capacity numbers, these override Building Optimizer API estimates. The team's numbers reflect real-world constraints the API doesn't capture.
 
 ---
 
@@ -212,116 +285,56 @@ ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_e
 
 ---
 
-### Step 5 — Run E-Occupancy Skill
+### Step 5 — Run Skill Tools
 
-**Tool:** `apply_e_occupancy_skill(building_type_description, stories, ...)`
+Three skill tools analyze the source data and produce structured outputs. The first two auto-publish full assessment documents to the site's Drive folder when `site_name` and `drive_folder_url` are provided.
 
-**Activity:**
-1. Matches building type against a scoring matrix using longest-keyword-match
-2. Applies height ceiling (4-6 stories capped at 42; 7+ capped at 20)
-3. Applies tenant deductions for shared HVAC (-5), shared egress (-5), no dedicated entrance (-5), no outdoor space (-5), building management approval (-5), shared parking (-3), incompatible tenants (-5)
-4. Assigns confidence (HIGH/MEDIUM/LOW)
+**E-Occupancy Skill** — `apply_e_occupancy_skill(building_type_description, stories, ..., site_name, drive_folder_url)`
+1. Matches building type against a scoring matrix
+2. Applies height ceiling and tenant deductions
+3. Returns score (0–100), zone (GREEN/YELLOW/RED), tier, and confidence
+4. Publishes assessment → `sources.e_occupancy_link`
 
-**Returns `report_data_fields`:**
-```
-q2.e_occupancy_score, q2.e_occupancy_zone, q2.e_occupancy_tier,
-q2.e_occupancy_timeline, q2.e_occupancy_confidence
-```
-
----
-
-### Step 6 — Run School Approval Skill
-
-**Tool:** `apply_school_approval_skill(state)`
-
-**Activity:**
-1. Looks up the two-letter state code in a built-in approval table (all 50 states + DC)
+**School Approval Skill** — `apply_school_approval_skill(state, site_name, drive_folder_url)`
+1. Looks up state in built-in approval table (all 50 states + DC)
 2. Returns approval type, gating status, timeline, and required steps
+3. Publishes assessment → `sources.school_approval_link`
 
-**Returns `report_data_fields`:**
-```
-q1.state_school_registration, q1.school_approval_type,
-q1.school_approval_gating, q1.school_approval_timeline_days,
-q1.steps_to_allow_operation
-```
-
----
-
-### Step 7 — Get Cost Estimate
-
-**Tool:** `get_cost_estimate(total_building_sf, region, rooms, classroom_count)`
-
-**Activity:**
-1. Uses ISP room list if available; otherwise auto-generates rooms from SF and classroom count
-2. Calls Building Optimizer Pricing API at two finish levels (Refresh = low, Alpha = high) to produce low/high ranges
-3. Adds per-SF estimates for code items not in the API (structural $8-25/SF, sprinkler $3-7/SF, fire alarm $2-4/SF, ADA $2-8/SF)
-4. Calculates contingency (15-20% of subtotal)
-
-**Returns `report_data_fields` — 24 keys:**
-```
-q3.structural_low/high, q3.mep_low/high, q3.sprinkler_low/high,
-q3.fire_alarm_low/high, q3.ada_low/high, q3.bathrooms_low/high,
-q3.finish_work_low/high, q3.ffe_low/high, q3.contingency_low/high,
-q3.total_low/high, q3.calculated_budget, q3.budget_formula,
-q3.budget_status, q3.key_cost_risks
-```
+**Cost Estimate** — `get_cost_estimate(total_building_sf, rooms=[...])`
+1. Uses ISP room list if available; otherwise auto-generates rooms from SF
+2. Calls Building Optimizer Pricing API at two finish levels
+3. Returns per-tier cost estimates
 
 ---
 
-### Step 8 — Compile and Write the DD Report
+### Step 6 — Compile and Write the DD Report
 
-**Tool:** `create_dd_report(site_name, drive_folder_url, report_data)`
-
-This is where the report schema system ensures every template placeholder gets filled.
+**Tool:** `create_dd_report(site_name, drive_folder_url, report_data, token_evidence=evidence)`
 
 **Activity:**
 
-1. **Copy template** — Copies the master Google Doc template (`DD_TEMPLATE_GOOGLE_DOC_ID`) into the site's Drive folder, named `"{site_name} DD Report - {MM/DD/YYYY}"`
+1. **Copy template** — Copies the master Google Doc template (`DD_TEMPLATE_GOOGLE_DOC_ID`) into the site's Drive folder
 
-2. **Normalize report_data** — The `normalize_report_data()` function from `report_schema.py`:
-   - Flattens the nested `report_data` dict into dot-separated keys (e.g., `q1.zoning_designation`)
+2. **Normalize report_data** — `normalize_report_data()` from `report_schema.py`:
+   - Flattens nested dicts to dot-separated keys
    - Injects defaults for `meta.site_name` and `meta.report_date`
-   - Applies the **alias map** (~43 aliases) to translate known agent key variations to canonical token names (e.g., `site.name` -> `meta.site_name`, `q1.zoning` -> `q1.zoning_designation`)
-   - Filters to only keys that match the 108 canonical template tokens
-   - Returns diagnostics: how many replacements applied, unmatched agent keys, unfilled tokens
+   - Applies the **alias map** (26 aliases) to translate known agent key variations to canonical token names
+   - Filters to only keys matching the 28 canonical template tokens
+   - Returns diagnostics: replacements applied, unmatched keys, unfilled tokens, token sources
 
-3. **Fill template** — Sends a single `batchUpdate` to the Docs API with one `replaceAllText` request per token
+3. **Compute deltas** — Server-side computation of `exec.delta_capacity`, `exec.delta_cost`, `exec.delta_ready` from MVP/Ideal pairs
 
-**Template token schema (108 tokens across 7 sections):**
+4. **Fill template** — `batchUpdate` to Docs API with `replaceAllText` per token. Link tokens (`sources.*`, `meta.drive_folder_url`) are inserted as clickable hyperlinks with display labels.
 
-| Section | Count | Examples |
-|---------|-------|---------|
-| **meta** | 7 | `meta.site_name`, `meta.city_state_zip`, `meta.report_date` |
-| **exec_summary** | 5 | `exec_summary.q1_summary`, `exec_summary.acquisition_conditions` |
-| **q1** (zoning/permits) | 14 | `q1.zoning_designation`, `q1.permits_required`, `q1.state_school_registration` |
-| **q2** (building/E-Occ) | 31 | `q2.year_built`, `q2.sprinklers`, `q2.e_occupancy_score`, `q2.scope_of_work` |
-| **q3** (cost) | 24 | `q3.structural_low`, `q3.total_high`, `q3.calculated_budget` |
-| **q4** (schedule) | 17 | `q4.acquire_property_date`, `q4.permit_timeline_weeks`, `q4.schedule_risks` |
-| **appendix** | 10 | `appendix.sir_link`, `appendix.inspection_link`, `appendix.phase1_esa_link` |
+5. **Generate trace report** — Creates a companion trace document listing each token's value, source, and raw evidence excerpt. Linked via `sources.trace_link`.
 
-**How skill tool output flows into the report:**
+**Token evidence:** As the agent reads each source document, it builds a parallel `evidence` dict recording the raw excerpt supporting each token value. This powers the trace report so reviewers can verify every field back to its source.
 
-The three skill tools (`apply_e_occupancy_skill`, `apply_school_approval_skill`, `get_cost_estimate`) each return a `report_data_fields` dict with keys that exactly match template tokens. The agent copies these directly into `report_data`:
-
-```
-cost_result = get_cost_estimate(total_building_sf=7277, rooms=[...])
-for key, value in cost_result["report_data_fields"].items():
-    report_data[key] = value  # e.g., report_data["q3.structural_low"] = "58,216"
-```
-
-**Alias safety net:**
-
-If the agent sends a key that doesn't exactly match a template token (e.g., `q1.zoning` instead of `q1.zoning_designation`), the alias map in `report_schema.py` catches it and maps it to the correct token. This handles ~43 known variations including:
-- `site.*` -> `meta.*` (agent nests under "site")
-- `q3.cost_estimate_table.*` -> `q3.*_low` (agent incorrectly nests cost data)
-- `q4.milestone_schedule.*` -> `q4.*_date` (agent incorrectly nests milestones)
-- `appendix.isp_link` -> `appendix.floorplan_viability_link`
-
-**Output:** Google Doc URL + diagnostics (replacements applied, unmatched keys, unfilled tokens).
+**Output:** Google Doc URL + diagnostics.
 
 ---
 
-### Step 9 — Check Completeness
+### Step 7 — Check Completeness
 
 **Tool:** `check_report_completeness(doc_id)`
 
@@ -335,12 +348,11 @@ If the agent sends a key that doesn't exactly match a template token (e.g., `q1.
 
 ---
 
-### Step 10 — Send Email Notification
+### Step 8 — Send Email Notification
 
-**Tool:** `send_dd_report_email(site_name, report_url, key_findings)` (interactive mode)
-**Direct SMTP** (automated modes)
+**Tool:** `send_dd_report_email(site_name, report_url, key_findings, additional_recipients)`
 
-**Activity:** Sends an HTML email to configured recipients with the site name, confirmation message, and a link to the Google Doc report.
+**Activity:** Sends an HTML email to configured recipients (base list + P1 Accountable person from Wrike) with the site name, key findings summary, and a link to the Google Doc report. Sent automatically — no confirmation prompt.
 
 ---
 
@@ -352,7 +364,7 @@ The report pipeline module contains all shared logic used by both the inbox scan
 
 | Function | Purpose |
 |----------|---------|
-| `TOOL_DEFINITIONS` | 7-tool schema list for Claude API calls |
+| `TOOL_DEFINITIONS` | 11-tool schema list for Claude API calls |
 | `route_tool_call()` / `route_tool_call_sync()` | Async/sync tool router mapping to server.py functions |
 | `list_shared_folders_once(gc)` | Pre-fetch SIR/ISP/Inspection shared folder files |
 | `match_site_in_shared_cache(terms, cache)` | Find docs for a site in pre-fetched cache |
@@ -374,8 +386,8 @@ The report pipeline module contains all shared logic used by both the inbox scan
 **Agent model:** `claude-sonnet-4-6`
 
 **Stage filter:** Only processes sites in these Overall Site Stages:
-- `1. Looking for Site`
-- `2. Evaluating Potential Site (LOI)`
+- `1. Looking for Sites`
+- `2. Evaluating Potential Sites (LOI)`
 
 Sites in later stages (FTO in progress, FTO signed, operational) are skipped.
 
@@ -389,7 +401,7 @@ For each Wrike Site Record in active stages with a Drive folder:
   4. If ready -> run Claude agent loop:
      a. get_site_record -> list_drive_documents -> read all 3 docs
      b. apply_e_occupancy_skill + apply_school_approval_skill + get_cost_estimate
-     c. create_dd_report (with normalize_report_data)
+     c. create_dd_report (with normalize_report_data + compute_deltas)
      d. check_report_completeness
      e. If complete -> send email to recipients
      f. If incomplete -> post Google Chat alert with unfilled tokens
@@ -409,7 +421,7 @@ The bare word `[Pending]` is banned. When a field can't be filled, the agent use
 
 Examples:
 - `[Not found — SIR did not include AHJ contact]`
-- `[Not found — ISP not yet in Drive folder]`
+- `[Not found — ISP not yet in shared Drive folder]`
 - `[Not found — Phase I ESA not in Drive folder]`
 - `[Not found — building inspection did not state year built]`
 
@@ -420,9 +432,19 @@ This tells `check_report_completeness` and human reviewers exactly why each fiel
 ## What the Agent Will Not Do
 
 - **Make lease or buy recommendations.** It presents data. The executive team decides.
+- **Editorialize.** No "well below standard", "executive review recommended", or "consider before proceeding" language.
 - **Override skill scores.** E-Occupancy and School Approval scores are authoritative.
 - **Fabricate system IDs.** Every Wrike ID, folder ID, and document ID comes from an actual API call.
 - **Leave unsourced gap labels.** Every unfilled field names the source that was checked.
+
+---
+
+## MatterBot Integration
+
+**Tool:** `generate_marketing_pack(space_sid, space_name, tier, max_rooms, room_types)`
+**Base URL:** `https://matterbot-1819903979408.us-central1.run.app`
+
+Fire-and-forget call to MatterBot rendering service. Generates marketing pack images from the Matterport scan and deposits them into the site's M1 subfolder in Drive. No auth required (internal service).
 
 ---
 
@@ -452,28 +474,32 @@ This tells `check_report_completeness` and human reviewers exactly why each fiel
 
 | File | What It Is |
 |------|-----------|
-| `prompt.md` | Agent system prompt — behavior, doc extraction rules, full report data schema |
-| `src/due_diligence_reporter/server.py` | MCP server — 10 tools + embedded skill logic |
+| `prompt_v2.md` | Agent system prompt — V2 workflow, exec summary format, report data schema |
+| `src/due_diligence_reporter/server.py` | MCP server — 13 tools + embedded skill logic |
 | `src/due_diligence_reporter/report_pipeline.py` | Shared pipeline — readiness check, Claude agent loop, notifications |
-| `src/due_diligence_reporter/report_schema.py` | Template token list (108), alias map (43), `normalize_report_data()` |
+| `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |
+| `src/due_diligence_reporter/classifier.py` | Three-tier document classification (regex → LLM filename → LLM content) |
 | `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, GPT-5.2 classification, Drive upload |
 | `src/due_diligence_reporter/wrike.py` | Wrike API client, site record search, LLM matching |
-| `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth) |
+| `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth), `list_files_recursive()` |
 | `src/due_diligence_reporter/config.py` | Pydantic settings loader |
 | `src/due_diligence_reporter/utils.py` | PDF extraction, placeholder builder, email, Google Chat |
 | `scripts/daily_dd_check.py` | Daily sweep — stage-filtered readiness check + report pipeline |
 | `scripts/scan_inbox.py` | Inbox scan + per-site report pipeline trigger |
-| `tests/test_report_pipeline.py` | Pipeline tests (11 tests) |
-| `tests/test_inbox_scanner.py` | Inbox scanner tests (16 tests) |
-| `tests/test_report_schema.py` | Schema integrity tests (13 tests) |
+| `tests/test_report_schema.py` | Schema integrity + normalization + delta tests (24 tests) |
+| `tests/test_report_pipeline.py` | Pipeline tool routing + readiness tests (13 tests) |
+| `tests/test_inbox_scanner.py` | Inbox scanner tests (19 tests) |
+| `tests/test_report_trace.py` | Trace report generation tests (15 tests) |
+| `tests/test_hyperlinks.py` | Link token insertion tests (17 tests) |
+| `tests/test_dd_output_fixes.py` | Output formatting + floorplan + rendering tests (25 tests) |
 | `.github/workflows/publish-to-mcp-hive.yml` | CI/CD — push to `main` deploys to MCP Hive |
-| `.github/workflows/inbox-scan.yml` | Inbox scan every 15 min, 8 AM-6 PM Central, Mon-Fri |
+| `.github/workflows/inbox-scan.yml` | Inbox scan every 15 min, 6 AM-8 PM Central, Mon-Fri |
 | `.github/workflows/daily-dd-check.yml` | Daily sweep at 9 AM Central, Mon-Fri |
 
 ---
 
-## GitHub Secrets (17 total)
+## GitHub Secrets (18 total)
 
 **Publish workflow (9):** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `WRIKE_ACCESS_TOKEN`, `OPENAI_API_KEY`, `DD_TEMPLATE_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`
 
-**Cron + Inbox workflows (8 additional):** `ANTHROPIC_API_KEY`, `GOOGLE_CHAT_WEBHOOK_URL`, `DD_REPORT_EMAIL_RECIPIENTS`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`, `SIR_FOLDER_ID`, `ISP_FOLDER_ID`, `BUILDING_INSPECTION_FOLDER_ID`
+**Cron + Inbox workflows (9 additional):** `ANTHROPIC_API_KEY`, `GOOGLE_CHAT_WEBHOOK_URL`, `DD_REPORT_EMAIL_RECIPIENTS`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`, `SIR_FOLDER_ID`, `ISP_FOLDER_ID`, `BUILDING_INSPECTION_FOLDER_ID`, `PRICING_API_KEY`
