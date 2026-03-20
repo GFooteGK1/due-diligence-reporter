@@ -238,8 +238,16 @@ def build_hyperlink_requests(
 
         start_idx = find_text_index_in_doc(doc_body, url)
         if start_idx is None:
+            logger.warning(
+                "Hyperlink: URL for token '%s' not found in doc body (url=%s)",
+                token, url[:80],
+            )
             continue
 
+        logger.debug(
+            "Hyperlink: found token '%s' at index %d (url=%s)",
+            token, start_idx, url[:80],
+        )
         requests_list.append({
             "updateTextStyle": {
                 "range": {

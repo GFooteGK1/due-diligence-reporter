@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime
@@ -1128,6 +1129,7 @@ async def apply_e_occupancy_skill(
                 logger.info("Auto-published E-Occupancy assessment: %s", pub["doc_url"])
         except Exception as e:
             logger.warning("Failed to auto-publish E-Occupancy assessment: %s", e)
+            result["publish_status"] = "failed"
 
     return result
 
@@ -1232,6 +1234,7 @@ async def apply_school_approval_skill(
                 logger.info("Auto-published School Approval assessment: %s", pub["doc_url"])
         except Exception as e:
             logger.warning("Failed to auto-publish School Approval assessment: %s", e)
+            result["publish_status"] = "failed"
 
     return result
 
@@ -1596,7 +1599,7 @@ async def create_dd_report(
         site_name: Site name used for the report document title.
         drive_folder_url: Google Drive folder URL for the site (report is saved here).
         report_data: Nested dict with all report sections and field values.
-        version: Report version (1 = current template, 2 = V2 template). Defaults to 1.
+        version: Report version (1 = current template, 2 = V2 template). Defaults to 2.
 
     Returns:
         Dict with the URL of the newly created DD report Google Doc.
@@ -1741,23 +1744,43 @@ async def create_dd_report(
             logger.warning("No placeholder replacements to apply — report_data may be empty")
 
         # Step 3b: Hyperlink URL tokens (convert plain-text URLs to clickable links)
-        link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
-        link_candidates = {
-            k: v for k, v in text_replacements.items()
-            if k in link_token_set and v.startswith("http")
-        }
-        if link_candidates:
-            doc_struct = gc.get_document(doc_id)
-            doc_body = doc_struct.get("body", {})
-            hyperlink_requests = build_hyperlink_requests(
-                doc_body, link_candidates, link_token_set,
-            )
-            if hyperlink_requests:
-                gc.batch_update_document(doc_id, hyperlink_requests)
+        hyperlinks_applied = 0
+        hyperlinked_tokens: list[str] = []
+        try:
+            link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
+            link_candidates = {
+                k: v for k, v in text_replacements.items()
+                if k in link_token_set and v.startswith("http")
+            }
+            if not link_candidates:
+                logger.info("Hyperlinks: no URL candidates found in link tokens")
+            else:
                 logger.info(
-                    "Applied %d hyperlinks to document %s",
-                    len(hyperlink_requests), doc_id,
+                    "Hyperlinks: %d URL candidates: %s",
+                    len(link_candidates), list(link_candidates.keys()),
                 )
+                doc_struct = gc.get_document(doc_id)
+                doc_body = doc_struct.get("body", {})
+                hyperlink_requests = build_hyperlink_requests(
+                    doc_body, link_candidates, link_token_set,
+                )
+                if not hyperlink_requests:
+                    logger.warning(
+                        "Hyperlinks: URLs not found in doc body — "
+                        "0 of %d candidates matched", len(link_candidates),
+                    )
+                else:
+                    gc.batch_update_document(doc_id, hyperlink_requests)
+                    hyperlinks_applied = len(hyperlink_requests)
+                    hyperlinked_tokens = list(link_candidates.keys())
+                    logger.info(
+                        "Applied %d hyperlinks to document %s: %s",
+                        hyperlinks_applied, doc_id, hyperlinked_tokens,
+                    )
+        except Exception as e:
+            logger.warning(
+                "Hyperlink insertion failed (report still usable): %s", e,
+            )
 
         # Step 4: Embed floorplan PNG from ISP shared folder (V1 only)
         if version == 1:
@@ -1767,6 +1790,32 @@ async def create_dd_report(
             )
 
         logger.info("DD report created successfully: %s", doc_url)
+
+        # Step 5: Upload report trace JSON to the same Drive folder
+        trace_data = {
+            "site_name": site_name.strip(),
+            "version": version,
+            "date": today_str,
+            "report_doc_id": doc_id,
+            "report_doc_url": doc_url,
+            "replacements": {k: v[:200] for k, v in replacements.items()},
+            "unmatched_keys": unmatched,
+            "unfilled_tokens": unfilled,
+            "hyperlinks_applied": hyperlinks_applied,
+            "hyperlinked_tokens": hyperlinked_tokens,
+        }
+        try:
+            trace_name = f"{site_name.strip()} Report Trace - {today_str.replace('/', '-')}.json"
+            trace_json = json.dumps(trace_data, indent=2)
+            trace_file = gc.upload_file_to_folder(
+                folder_id=folder_id,
+                file_name=trace_name,
+                file_bytes=trace_json.encode("utf-8"),
+                mime_type="application/json",
+            )
+            logger.info("Uploaded report trace: %s", trace_file.get("webViewLink"))
+        except Exception as e:
+            logger.warning("Failed to upload report trace (report still valid): %s", e)
 
         return {
             "status": "success",
@@ -1778,6 +1827,7 @@ async def create_dd_report(
             "replacements_applied": len(replace_requests),
             "unmatched_agent_keys": len(unmatched),
             "unfilled_template_tokens": len(unfilled),
+            "hyperlinks_applied": hyperlinks_applied,
             "message": f"DD report created: {doc_url}",
         }
 
