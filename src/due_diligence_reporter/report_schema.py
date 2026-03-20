@@ -164,7 +164,7 @@ TEMPLATE_TOKENS_V2: list[str] = [
     "meta.drive_folder_url",
     # ── exec: "Can we do this?" card (pick-menu dimensions) ───────────────
     "exec.c_answer",
-    "exec.c_permitting",
+    "exec.c_edreg",
     "exec.c_occupancy",
     "exec.c_zoning",
     # ── exec: cost / capacity / timeline grid (bare values) ───────────────
@@ -204,7 +204,8 @@ AGENT_KEY_ALIASES_V2: dict[str, str] = {
     "site.prepared_by":     "meta.prepared_by",
     # ── exec_summary.* → exec.* (V1 agent output → V2 tokens) ───────────
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
-    # ── backward compat: old timeline tokens → new split tokens ──────────
+    # ── backward compat: old token names → new names ────────────────────
+    "exec.c_permitting":                  "exec.c_edreg",
     "exec.f_ready_mm_yy":                 "exec.f_mvp_ready",
     # ── typo alias ────────────────────────────────────────────────────────
     "exec.e_ideal_capcity":               "exec.e_ideal_capacity",

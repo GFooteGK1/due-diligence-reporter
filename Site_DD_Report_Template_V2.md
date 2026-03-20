@@ -13,7 +13,7 @@
 
 | Can we do this? |
 | :---- |
-| **{{exec.c\_answer}}** Education Regulatory Approval: {{exec.c\_permitting}} Occupancy path: {{exec.c\_occupancy}} Zoning: {{exec.c\_zoning}} |
+| **{{exec.c\_answer}}** Education Regulatory Approval: {{exec.c\_edreg}} Occupancy path: {{exec.c\_occupancy}} Zoning: {{exec.c\_zoning}} |
 
 | How much will it cost and when will it be ready? |
 | ----- |

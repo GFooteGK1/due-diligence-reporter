@@ -485,7 +485,7 @@ Each dimension uses a **fixed option menu**. Pick exactly one option per field b
 | Token | Options (pick one) |
 |---|---|
 | `exec.c_answer` | `YES` / `NO` / `CONDITIONAL` |
-| `exec.c_permitting` | `Not required` / `Required and have done` / `Required have not done` |
+| `exec.c_edreg` | `Not required` / `Required and have done` / `Required have not done` |
 | `exec.c_occupancy` | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_zoning` | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
 

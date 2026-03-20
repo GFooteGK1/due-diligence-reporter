@@ -380,11 +380,11 @@ class TestV2Normalization:
         assert replacements["meta.report_date"] == "03/19/2026"
 
     def test_v2_pick_menu_tokens_pass_through(self):
-        """Pick-menu dimension tokens (c_zoning, c_permitting, c_occupancy) pass through."""
+        """Pick-menu dimension tokens (c_zoning, c_edreg, c_occupancy) pass through."""
         report_data = {
             "exec": {
                 "c_zoning": "Permitted by right",
-                "c_permitting": "Not required",
+                "c_edreg": "Not required",
                 "c_occupancy": "Has E-Occupancy",
             },
         }
@@ -392,7 +392,7 @@ class TestV2Normalization:
             report_data, site_name="Test", report_date="01/01/2026",
         )
         assert replacements["exec.c_zoning"] == "Permitted by right"
-        assert replacements["exec.c_permitting"] == "Not required"
+        assert replacements["exec.c_edreg"] == "Not required"
         assert replacements["exec.c_occupancy"] == "Has E-Occupancy"
 
     def test_v2_backward_compat_timeline_alias(self):
