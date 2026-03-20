@@ -17,14 +17,12 @@ from .classifier import classify_by_keywords, classify_document, match_file_to_s
 from .config import get_settings
 from .google_client import GoogleClient
 from .report_schema import (
-    LINK_DISPLAY_LABELS_V1,
-    LINK_DISPLAY_LABELS_V2,
-    LINK_TOKENS_V1,
-    LINK_TOKENS_V2,
-    TOKEN_SOURCES_V2,
-    compute_v2_deltas,
+    LINK_DISPLAY_LABELS,
+    LINK_TOKENS,
+    TEMPLATE_TOKENS,
+    TOKEN_SOURCES,
+    compute_deltas,
     normalize_report_data,
-    normalize_report_data_v2,
 )
 from .utils import (
     build_hyperlink_requests,
@@ -1415,195 +1413,23 @@ async def get_cost_estimate(
     }
 
 
-_MAX_IMAGE_WIDTH_PT = 450  # Google Doc printable width is ~468pt with 1" margins
-_MAX_IMAGE_HEIGHT_PT = 350
-
-
-def _find_floorplan_image_in_isp_folder(
-    gc: GoogleClient,
-    match_terms: list[str],
-) -> dict[str, Any] | None:
-    """Search the shared ISP folder for a floorplan image matching the site.
-
-    Looks for PNG or JPEG files whose name contains any of the match terms.
-    Returns the Drive file dict or ``None``.
-    """
-    settings = get_settings()
-    isp_folder_id = settings.isp_folder_id
-    if not isp_folder_id:
-        return None
-
-    files = gc.list_files_recursive(isp_folder_id, max_depth=2)
-    needles = [t.lower() for t in match_terms if t]
-
-    _IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg"}
-    _IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
-
-    image_files = [
-        f for f in files
-        if f.get("mimeType", "") in _IMAGE_MIMES
-        or any(f.get("name", "").lower().endswith(ext) for ext in _IMAGE_EXTS)
-    ]
-
-    logger.info(
-        "ISP folder: %d total files, %d images, matching against: %s",
-        len(files), len(image_files), needles,
-    )
-
-    for f in image_files:
-        fname = f.get("name", "").lower()
-        if any(needle in fname for needle in needles):
-            logger.info("Found floorplan image in ISP folder: %s (mime=%s)", f.get("name"), f.get("mimeType"))
-            return f
-
-    # Log what images exist for debugging when no match is found
-    if image_files:
-        logger.info(
-            "Image files in ISP folder (no match): %s",
-            [f.get("name") for f in image_files[:10]],
-        )
-    else:
-        logger.info("No image files found in ISP folder at all")
-    return None
-
-
-def _embed_floorplan_image(
-    gc: GoogleClient,
-    *,
-    doc_id: str,
-    folder_id: str,
-    site_name: str,
-    site_address: str | None = None,
-) -> bool:
-    """Find the floorplan image in the ISP folder and embed it in the report.
-
-    Searches the shared ISP folder for a PNG/JPEG image matching the site name,
-    makes it publicly readable, then inserts it at the ``{{q2.floorplan_image}}``
-    placeholder via Google Docs ``insertInlineImage``.
-
-    Returns True if the image was successfully inserted, False otherwise.
-    On failure, replaces the placeholder with a sourced gap label.
-    """
-    inserted = False
-
-    try:
-        match_terms = _build_site_match_terms(site_name, site_address)
-        image_file = _find_floorplan_image_in_isp_folder(gc, match_terms)
-
-        if image_file:
-            file_id = image_file.get("id", "")
-            if not file_id:
-                raise RuntimeError("PNG file has no ID")
-
-            # Make file publicly readable — insertInlineImage fetches
-            # the URI server-side with no OAuth credentials.
-            gc.make_file_public(file_id)
-            image_uri = f"https://lh3.googleusercontent.com/d/{file_id}"
-
-            doc_struct = gc.get_document(doc_id)
-            doc_body = doc_struct.get("body", {})
-            placeholder = "{{q2.floorplan_image}}"
-            idx = find_text_index_in_doc(doc_body, placeholder)
-
-            if idx is not None:
-                image_requests: list[dict[str, Any]] = [
-                    {
-                        "deleteContentRange": {
-                            "range": {
-                                "startIndex": idx,
-                                "endIndex": idx + len(placeholder),
-                            }
-                        }
-                    },
-                    {
-                        "insertInlineImage": {
-                            "uri": image_uri,
-                            "location": {"index": idx},
-                            "objectSize": {
-                                "width": {"magnitude": _MAX_IMAGE_WIDTH_PT, "unit": "PT"},
-                            },
-                        }
-                    },
-                ]
-                gc.batch_update_document(doc_id, image_requests)
-                inserted = True
-                logger.info(
-                    "Inserted floorplan PNG '%s' into doc %s",
-                    image_file.get("name"), doc_id,
-                )
-            else:
-                logger.warning(
-                    "Could not find {{q2.floorplan_image}} placeholder in doc %s",
-                    doc_id,
-                )
-        else:
-            logger.info("No floorplan PNG found for site '%s'", site_name)
-    except Exception as e:
-        logger.warning("Failed to embed floorplan image: %s", e)
-
-    # Fallback: replace placeholder with sourced gap label
-    if not inserted:
-        fallback_requests = build_replace_all_text_requests(
-            {"q2.floorplan_image": "[Not found — floorplan image not in ISP shared folder]"}
-        )
-        try:
-            gc.batch_update_document(doc_id, fallback_requests)
-        except Exception as e:
-            logger.warning("Fallback floorplan placeholder replacement failed: %s", e)
-
-    return inserted
-
-
-def _fit_image_to_page(px_w: int, px_h: int) -> tuple[int, int]:
-    """Scale pixel dimensions to fit within Google Doc page margins.
-
-    Returns ``(width_pt, height_pt)`` that preserves aspect ratio and fits
-    within ``_MAX_IMAGE_WIDTH_PT`` x ``_MAX_IMAGE_HEIGHT_PT``.
-    """
-    if px_w <= 0 or px_h <= 0:
-        return (_MAX_IMAGE_WIDTH_PT, _MAX_IMAGE_HEIGHT_PT)
-
-    aspect = px_w / px_h
-
-    # Start at max width, compute proportional height
-    width_pt = _MAX_IMAGE_WIDTH_PT
-    height_pt = round(width_pt / aspect)
-
-    # If height exceeds cap, scale down from max height instead
-    if height_pt > _MAX_IMAGE_HEIGHT_PT:
-        height_pt = _MAX_IMAGE_HEIGHT_PT
-        width_pt = round(height_pt * aspect)
-
-    return (width_pt, height_pt)
-
-
 @mcp.tool()
 async def create_dd_report(
     site_name: str,
     drive_folder_url: str,
     report_data: dict[str, Any],
-    version: int = 2,
     token_evidence: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create a completed DD report Google Doc for a site.
 
-    Copies the master DD report template to the site's Drive folder, names it
-    "[Site Name] DD Report - [MM/DD/YYYY]", then fills all {{PLACEHOLDER}} tokens
-    using Google Docs API replaceAllText in a single batchUpdate call.
-
-    The floorplan image is automatically found by searching the shared ISP folder
-    for a ``.png`` file matching the site name, and embedded inline at the
-    ``{{q2.floorplan_image}}`` placeholder position.
-
-    The report_data dict should follow the full DD report schema with nested sections:
-    meta, exec_summary, q1, q2, q3, q4, appendix. All nested keys are flattened using
-    dot notation for placeholder matching (e.g., q1.rating -> {{q1.rating}}).
+    Copies the V2 executive one-pager template to the site's Drive folder,
+    names it "[Site Name] DD Report - [MM/DD/YYYY]", then fills all
+    {{PLACEHOLDER}} tokens using Google Docs API replaceAllText.
 
     Args:
         site_name: Site name used for the report document title.
         drive_folder_url: Google Drive folder URL for the site (report is saved here).
         report_data: Nested dict with all report sections and field values.
-        version: Report version (1 = current template, 2 = V2 template). Defaults to 2.
         token_evidence: Optional dict mapping token names to the raw excerpt from the
             source document that supports the token value. Included in the report trace
             so reviewers can verify each field back to its source.
@@ -1643,27 +1469,20 @@ async def create_dd_report(
         }
 
     settings = get_settings()
-    if version == 2:
-        template_id = settings.dd_template_v2_google_doc_id
-        template_label = "DD_TEMPLATE_V2_GOOGLE_DOC_ID"
-    else:
-        template_id = settings.dd_template_google_doc_id
-        template_label = "DD_TEMPLATE_GOOGLE_DOC_ID"
-
+    template_id = settings.dd_template_v2_google_doc_id
     if not template_id:
         return {
             "status": "error",
             "error": "Missing configuration",
             "message": (
-                f"{template_label} is not configured. "
+                "DD_TEMPLATE_V2_GOOGLE_DOC_ID is not configured. "
                 "Set this environment variable to the Google Doc template ID."
             ),
         }
 
     # Build the document name
     today_str = datetime.now().strftime("%m/%d/%Y")
-    version_tag = " V2" if version == 2 else ""
-    doc_name = f"{site_name.strip()}{version_tag} DD Report - {today_str}"
+    doc_name = f"{site_name.strip()} DD Report - {today_str}"
 
     logger.info("Creating DD report: %s", doc_name)
 
@@ -1689,27 +1508,14 @@ async def create_dd_report(
         logger.info("Copied template to new document: %s (id=%s)", doc_name, doc_id)
 
         # Step 2: Normalize report_data → template-aligned replacements
-        token_sources: dict[str, str] = {}
-        if version == 2:
-            replacements, unmatched, unfilled, token_sources = normalize_report_data_v2(
-                report_data, site_name=site_name.strip(), report_date=today_str,
-            )
-            compute_v2_deltas(replacements)
-            # Mark deltas that were computed (not agent-filled)
-            for delta_token in ("exec.delta_capacity", "exec.delta_cost", "exec.delta_ready"):
-                if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
-                    token_sources[delta_token] = "computed"
-        else:
-            replacements, unmatched, unfilled = normalize_report_data(
-                report_data, site_name=site_name.strip(), report_date=today_str,
-            )
-
-        # Collapse consecutive newlines in scope_of_work to prevent stray numbered
-        # paragraphs when the placeholder sits inside a numbered list in the template
-        if "q2.scope_of_work" in replacements:
-            replacements["q2.scope_of_work"] = re.sub(
-                r"\n{2,}", "\n", replacements["q2.scope_of_work"]
-            )
+        replacements, unmatched, unfilled, token_sources = normalize_report_data(
+            report_data, site_name=site_name.strip(), report_date=today_str,
+        )
+        compute_deltas(replacements)
+        # Mark deltas that were computed (not agent-filled)
+        for delta_token in ("exec.delta_capacity", "exec.delta_cost", "exec.delta_ready"):
+            if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
+                token_sources[delta_token] = "computed"
 
         # Inject the generated doc URL (not in the agent's report_data)
         replacements.setdefault("meta.drive_folder_url", drive_folder_url)
@@ -1721,43 +1527,17 @@ async def create_dd_report(
         if unmatched:
             logger.warning("Unmatched agent keys (no template token): %s", unmatched)
 
-        # Step 2b: Auto-populate M1 Property Acquired subfolder link (V1 only)
-        if version == 1 and "q2.renderings_link" not in replacements:
-            try:
-                subfolders = gc.list_subfolders(folder_id)
-                m1_folder = next(
-                    (sf for sf in subfolders if "m1" in sf.get("name", "").lower()),
-                    None,
-                )
-                if m1_folder and m1_folder.get("webViewLink"):
-                    replacements["q2.renderings_link"] = m1_folder["webViewLink"]
-                    logger.info("Auto-populated M1 folder link: %s", m1_folder["webViewLink"])
-                else:
-                    replacements.setdefault(
-                        "q2.renderings_link",
-                        "[Not found — no M1 subfolder in site Drive folder]",
-                    )
-            except Exception as e:
-                logger.warning("Failed to look up M1 subfolder: %s", e)
-                replacements.setdefault(
-                    "q2.renderings_link",
-                    "[Not found — could not search for M1 subfolder]",
-                )
-
         # Step 3: Build and apply replaceAllText batch update
-        # Exclude floorplan_image — handled separately via image insertion
-        text_replacements = {k: v for k, v in replacements.items() if k != "q2.floorplan_image"}
+        text_replacements = dict(replacements)
 
         # Step 3a: Swap URL values with display labels for link tokens.
         # Save the original URLs so the hyperlink builder can set link targets.
-        link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
-        display_labels = LINK_DISPLAY_LABELS_V2 if version == 2 else LINK_DISPLAY_LABELS_V1
         link_urls: dict[str, str] = {}
-        for token in link_token_set:
+        for token in LINK_TOKENS:
             value = text_replacements.get(token, "")
-            if value.startswith("http") and token in display_labels:
+            if value.startswith("http") and token in LINK_DISPLAY_LABELS:
                 link_urls[token] = value
-                text_replacements[token] = display_labels[token]
+                text_replacements[token] = LINK_DISPLAY_LABELS[token]
 
         replace_requests = build_replace_all_text_requests(text_replacements)
 
@@ -1782,7 +1562,7 @@ async def create_dd_report(
         }
 
         # Pre-flight: which link tokens did the agent not provide at all?
-        missing_from_agent = [t for t in link_token_set if t not in replacements]
+        missing_from_agent = [t for t in LINK_TOKENS if t not in replacements]
         if missing_from_agent:
             logger.warning(
                 "Hyperlinks: agent did not provide values for: %s", missing_from_agent,
@@ -1791,17 +1571,17 @@ async def create_dd_report(
 
         # Pre-flight: which link tokens have non-URL values?
         non_url_values = {
-            k: replacements[k][:120] for k in link_token_set
+            k: replacements[k][:120] for k in LINK_TOKENS
             if k in replacements and not replacements[k].startswith("http")
         }
         if non_url_values:
             logger.info("Hyperlinks: link tokens with non-URL values: %s", non_url_values)
         hyperlink_trace["non_url_values"] = non_url_values
 
-        # Pre-flight: did the agent provide URLs under keys NOT in link_token_set?
+        # Pre-flight: did the agent provide URLs under keys NOT in LINK_TOKENS?
         unmapped_agent_urls = [
             k for k, v in replacements.items()
-            if k not in link_token_set and v.startswith("http")
+            if k not in LINK_TOKENS and v.startswith("http")
         ]
         if unmapped_agent_urls:
             logger.warning(
@@ -1813,7 +1593,7 @@ async def create_dd_report(
         # Build and apply hyperlinks using display labels
         try:
             hyperlink_trace["candidates"] = {
-                k: {"label": display_labels.get(k, v), "url": v[:200]}
+                k: {"label": LINK_DISPLAY_LABELS.get(k, v), "url": v[:200]}
                 for k, v in link_urls.items()
             }
 
@@ -1827,7 +1607,7 @@ async def create_dd_report(
                 doc_struct = gc.get_document(doc_id)
                 doc_body = doc_struct.get("body", {})
                 hl_result = build_hyperlink_requests(
-                    doc_body, link_urls, link_token_set, display_labels,
+                    doc_body, link_urls, LINK_TOKENS, LINK_DISPLAY_LABELS,
                 )
                 hyperlink_trace["found_in_doc"] = hl_result.found_tokens
                 hyperlink_trace["not_found_in_doc"] = hl_result.not_found_tokens
@@ -1850,35 +1630,23 @@ async def create_dd_report(
             )
             hyperlink_trace["error"] = str(e)
 
-        # Step 4: Embed floorplan PNG from ISP shared folder (V1 only)
-        if version == 1:
-            floorplan_inserted = _embed_floorplan_image(
-                gc, doc_id=doc_id, folder_id=folder_id,
-                site_name=site_name,
-            )
-
         logger.info("DD report created successfully: %s", doc_url)
 
-        # Step 5: Upload report trace JSON to the same Drive folder
-        # V2: build focused token report (20 non-link tokens with document source + evidence)
+        # Step 4: Upload report trace JSON to the same Drive folder
         evidence = token_evidence or {}
-        if version == 2:
-            token_report = {
-                token: {
-                    "value": replacements.get(token, "")[:200],
-                    "source": TOKEN_SOURCES_V2.get(token, "Unknown"),
-                    "filled": token not in unfilled,
-                    **({"evidence": evidence[token][:500]} if token in evidence else {}),
-                }
-                for token in TEMPLATE_TOKENS_V2
-                if token not in LINK_TOKENS_V2
+        token_report = {
+            token: {
+                "value": replacements.get(token, "")[:200],
+                "source": TOKEN_SOURCES.get(token, "Unknown"),
+                "filled": token not in unfilled,
+                **({"evidence": evidence[token][:500]} if token in evidence else {}),
             }
-        else:
-            token_report = None
+            for token in TEMPLATE_TOKENS
+            if token not in LINK_TOKENS
+        }
 
         trace_data = {
             "site_name": site_name.strip(),
-            "version": version,
             "date": today_str,
             "report_doc_id": doc_id,
             "report_doc_url": doc_url,
@@ -1900,8 +1668,8 @@ async def create_dd_report(
             logger.info("Uploaded report trace: %s", trace_url)
 
             # Fill {{sources.trace_link}} with display label and hyperlink it
-            if trace_url and version == 2:
-                trace_label = LINK_DISPLAY_LABELS_V2.get("sources.trace_link", trace_url)
+            if trace_url:
+                trace_label = LINK_DISPLAY_LABELS.get("sources.trace_link", trace_url)
                 gc.batch_update_document(doc_id, build_replace_all_text_requests(
                     {"sources.trace_link": trace_label},
                 ))
