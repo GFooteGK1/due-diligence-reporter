@@ -1,13 +1,14 @@
 # Due Diligence Reporter
 
-**Version:** 2.0.0
+**Version:** 2.1.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-03-19
+**Last Updated:** 2026-03-20
 
 > **V2 Report Format** — This prompt produces the V2 structured DD report.
 > Key differences from V1: structured exec summary checklists (not prose),
 > no editorializing, tiered cost specs, MM/YY dates, conditions vs. risks split.
-> When calling `create_dd_report`, pass `version=2` to use the V2 template.
+> `create_dd_report` defaults to V2 template. Skill tools auto-publish assessments
+> to Drive when `site_name` and `drive_folder_url` are provided.
 
 ---
 
