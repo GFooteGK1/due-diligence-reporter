@@ -191,6 +191,38 @@ TEMPLATE_TOKENS_V2: list[str] = [
 TEMPLATE_TOKEN_V2_SET: frozenset[str] = frozenset(TEMPLATE_TOKENS_V2)
 
 # ---------------------------------------------------------------------------
+# Token → document source mapping (which document provides each token's data)
+# ---------------------------------------------------------------------------
+
+TOKEN_SOURCES_V2: dict[str, str] = {
+    # ── meta ───────────────────────────────────────────────────────────────
+    "meta.site_name":               "Wrike",
+    "meta.city_state_zip":          "Wrike",
+    "meta.school_type":             "Wrike",
+    "meta.marketing_name":          "Wrike",
+    "meta.report_date":             "System",
+    "meta.prepared_by":             "System",
+    # ── exec: "Can we do this?" ────────────────────────────────────────────
+    "exec.c_answer":                "Agent",
+    "exec.c_zoning":                "SIR",
+    "exec.c_occupancy":             "E-Occupancy",
+    "exec.c_edreg":                 "School Approval",
+    # ── exec: cost / capacity / timeline ───────────────────────────────────
+    "exec.e_mvp_capacity":          "ISP",
+    "exec.e_ideal_capacity":        "ISP",
+    "exec.e_mvp_cost":              "Building Inspection",
+    "exec.e_ideal_cost":            "Building Inspection",
+    "exec.f_mvp_ready":             "Agent",
+    "exec.f_ideal_ready":           "Agent",
+    # ── exec: deltas (server-computed) ─────────────────────────────────────
+    "exec.delta_capacity":          "Computed",
+    "exec.delta_cost":              "Computed",
+    "exec.delta_ready":             "Computed",
+    # ── exec: conditions ───────────────────────────────────────────────────
+    "exec.acquisition_conditions":  "Agent",
+}
+
+# ---------------------------------------------------------------------------
 # Link tokens — values that should render as clickable hyperlinks in the doc
 # ---------------------------------------------------------------------------
 
