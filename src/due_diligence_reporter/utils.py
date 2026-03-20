@@ -246,12 +246,17 @@ def build_hyperlink_requests(
     doc_body: dict[str, Any],
     replacements: dict[str, str],
     link_tokens: frozenset[str],
+    display_labels: dict[str, str] | None = None,
 ) -> HyperlinkResult:
-    """Build ``updateTextStyle`` requests to hyperlink URL values in the doc.
+    """Build ``updateTextStyle`` requests to hyperlink text in the doc.
 
     For each token in *link_tokens* whose replacement value starts with
-    ``http``, finds the text in *doc_body* and returns an ``updateTextStyle``
-    request that sets ``link.url`` on that character range.
+    ``http``, finds the corresponding text in *doc_body* and returns an
+    ``updateTextStyle`` request that sets ``link.url`` on that range.
+
+    When *display_labels* is provided, searches for the label text instead
+    of the raw URL (the label was already inserted by ``replaceAllText``).
+    The URL from *replacements* is still used as the link target.
 
     Must be called **after** ``replaceAllText`` has been applied — pass a
     fresh ``doc_body`` from ``get_document()``.
@@ -266,25 +271,27 @@ def build_hyperlink_requests(
         if not url.startswith("http"):
             continue
 
-        start_idx = find_text_index_in_doc(doc_body, url)
+        search_text = (display_labels or {}).get(token, url)
+        start_idx = find_text_index_in_doc(doc_body, search_text)
         if start_idx is None:
             logger.warning(
-                "Hyperlink: URL for token '%s' not found in doc body (url=%s)",
-                token, url[:80],
+                "Hyperlink: text for token '%s' not found in doc body "
+                "(search=%r, url=%s)",
+                token, search_text, url[:80],
             )
             result.not_found_tokens.append(token)
             continue
 
         logger.debug(
-            "Hyperlink: found token '%s' at index %d (url=%s)",
-            token, start_idx, url[:80],
+            "Hyperlink: found token '%s' at index %d (search=%r, url=%s)",
+            token, start_idx, search_text, url[:80],
         )
         result.found_tokens.append(token)
         result.requests.append({
             "updateTextStyle": {
                 "range": {
                     "startIndex": start_idx,
-                    "endIndex": start_idx + len(url),
+                    "endIndex": start_idx + len(search_text),
                 },
                 "textStyle": {
                     "link": {"url": url},

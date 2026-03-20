@@ -170,6 +170,83 @@ class TestBuildHyperlinkRequests:
         assert result.found_tokens == ["meta.drive_folder_url"]
 
 
+DISPLAY_LABELS = {
+    "sources.sir_link": "View SIR",
+    "sources.isp_link": "View ISP",
+    "meta.drive_folder_url": "View Site Folder",
+}
+
+
+class TestDisplayLabels:
+    """Tests for display-text hyperlinks (label text linked to URL)."""
+
+    def test_searches_for_label_links_to_url(self):
+        """With display_labels, searches for label text and sets url as link target."""
+        doc_body = _make_doc_body([(10, "View SIR")])
+        replacements = {
+            "sources.sir_link": "https://drive.google.com/file/abc",
+        }
+
+        result = build_hyperlink_requests(
+            doc_body, replacements, LINK_TOKENS, display_labels=DISPLAY_LABELS,
+        )
+
+        assert len(result.requests) == 1
+        req = result.requests[0]["updateTextStyle"]
+        assert req["range"]["startIndex"] == 10
+        assert req["range"]["endIndex"] == 10 + len("View SIR")
+        assert req["textStyle"]["link"]["url"] == "https://drive.google.com/file/abc"
+        assert result.found_tokens == ["sources.sir_link"]
+
+    def test_falls_back_to_url_when_no_label(self):
+        """Tokens without a display label search for the raw URL."""
+        extra_tokens = frozenset({"sources.sir_link", "sources.other_link"})
+        doc_body = _make_doc_body([(0, "https://example.com/other")])
+        replacements = {
+            "sources.other_link": "https://example.com/other",
+        }
+
+        result = build_hyperlink_requests(
+            doc_body, replacements, extra_tokens, display_labels=DISPLAY_LABELS,
+        )
+
+        assert len(result.requests) == 1
+        req = result.requests[0]["updateTextStyle"]
+        assert req["textStyle"]["link"]["url"] == "https://example.com/other"
+        assert req["range"]["endIndex"] == len("https://example.com/other")
+
+    def test_multiple_labels_in_table(self):
+        """Multiple display labels inside a table all get hyperlinked."""
+        doc_body = {
+            "content": [{
+                "table": {
+                    "tableRows": [{
+                        "tableCells": [
+                            {"content": [{"paragraph": {"elements": [
+                                {"startIndex": 10, "textRun": {"content": "View SIR"}},
+                            ]}}]},
+                            {"content": [{"paragraph": {"elements": [
+                                {"startIndex": 30, "textRun": {"content": "View ISP"}},
+                            ]}}]},
+                        ]
+                    }]
+                }
+            }]
+        }
+        replacements = {
+            "sources.sir_link": "https://drive.google.com/sir",
+            "sources.isp_link": "https://drive.google.com/isp",
+        }
+
+        result = build_hyperlink_requests(
+            doc_body, replacements, LINK_TOKENS, display_labels=DISPLAY_LABELS,
+        )
+
+        assert len(result.requests) == 2
+        urls = {r["updateTextStyle"]["textStyle"]["link"]["url"] for r in result.requests}
+        assert urls == {"https://drive.google.com/sir", "https://drive.google.com/isp"}
+
+
 class TestFindTextIndexSplitRuns:
     """Tests for find_text_index_in_doc with split textRuns."""
 

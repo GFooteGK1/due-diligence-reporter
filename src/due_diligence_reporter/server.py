@@ -17,6 +17,8 @@ from .classifier import classify_by_keywords, classify_document, match_file_to_s
 from .config import get_settings
 from .google_client import GoogleClient
 from .report_schema import (
+    LINK_DISPLAY_LABELS_V1,
+    LINK_DISPLAY_LABELS_V2,
     LINK_TOKENS_V1,
     LINK_TOKENS_V2,
     compute_v2_deltas,
@@ -1733,6 +1735,18 @@ async def create_dd_report(
         # Step 3: Build and apply replaceAllText batch update
         # Exclude floorplan_image — handled separately via image insertion
         text_replacements = {k: v for k, v in replacements.items() if k != "q2.floorplan_image"}
+
+        # Step 3a: Swap URL values with display labels for link tokens.
+        # Save the original URLs so the hyperlink builder can set link targets.
+        link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
+        display_labels = LINK_DISPLAY_LABELS_V2 if version == 2 else LINK_DISPLAY_LABELS_V1
+        link_urls: dict[str, str] = {}
+        for token in link_token_set:
+            value = text_replacements.get(token, "")
+            if value.startswith("http") and token in display_labels:
+                link_urls[token] = value
+                text_replacements[token] = display_labels[token]
+
         replace_requests = build_replace_all_text_requests(text_replacements)
 
         if replace_requests:
@@ -1743,8 +1757,7 @@ async def create_dd_report(
         else:
             logger.warning("No placeholder replacements to apply — report_data may be empty")
 
-        # Step 3b: Hyperlink URL tokens (convert plain-text URLs to clickable links)
-        link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
+        # Step 3b: Hyperlink display labels (convert label text to clickable links)
         hyperlink_trace: dict[str, Any] = {
             "candidates": {},
             "found_in_doc": [],
@@ -1757,7 +1770,7 @@ async def create_dd_report(
         }
 
         # Pre-flight: which link tokens did the agent not provide at all?
-        missing_from_agent = [t for t in link_token_set if t not in text_replacements]
+        missing_from_agent = [t for t in link_token_set if t not in replacements]
         if missing_from_agent:
             logger.warning(
                 "Hyperlinks: agent did not provide values for: %s", missing_from_agent,
@@ -1766,8 +1779,8 @@ async def create_dd_report(
 
         # Pre-flight: which link tokens have non-URL values?
         non_url_values = {
-            k: v[:120] for k, v in text_replacements.items()
-            if k in link_token_set and not v.startswith("http")
+            k: replacements[k][:120] for k in link_token_set
+            if k in replacements and not replacements[k].startswith("http")
         }
         if non_url_values:
             logger.info("Hyperlinks: link tokens with non-URL values: %s", non_url_values)
@@ -1775,7 +1788,7 @@ async def create_dd_report(
 
         # Pre-flight: did the agent provide URLs under keys NOT in link_token_set?
         unmapped_agent_urls = [
-            k for k, v in text_replacements.items()
+            k for k, v in replacements.items()
             if k not in link_token_set and v.startswith("http")
         ]
         if unmapped_agent_urls:
@@ -1785,33 +1798,32 @@ async def create_dd_report(
             )
         hyperlink_trace["unmapped_agent_urls"] = unmapped_agent_urls
 
-        # Build and apply hyperlinks
+        # Build and apply hyperlinks using display labels
         try:
-            link_candidates = {
-                k: v for k, v in text_replacements.items()
-                if k in link_token_set and v.startswith("http")
+            hyperlink_trace["candidates"] = {
+                k: {"label": display_labels.get(k, v), "url": v[:200]}
+                for k, v in link_urls.items()
             }
-            hyperlink_trace["candidates"] = {k: v[:200] for k, v in link_candidates.items()}
 
-            if not link_candidates:
+            if not link_urls:
                 logger.info("Hyperlinks: no URL candidates found in link tokens")
             else:
                 logger.info(
                     "Hyperlinks: %d URL candidates: %s",
-                    len(link_candidates), list(link_candidates.keys()),
+                    len(link_urls), list(link_urls.keys()),
                 )
                 doc_struct = gc.get_document(doc_id)
                 doc_body = doc_struct.get("body", {})
                 hl_result = build_hyperlink_requests(
-                    doc_body, link_candidates, link_token_set,
+                    doc_body, link_urls, link_token_set, display_labels,
                 )
                 hyperlink_trace["found_in_doc"] = hl_result.found_tokens
                 hyperlink_trace["not_found_in_doc"] = hl_result.not_found_tokens
 
                 if not hl_result.requests:
                     logger.warning(
-                        "Hyperlinks: URLs not found in doc body — "
-                        "0 of %d candidates matched", len(link_candidates),
+                        "Hyperlinks: display labels not found in doc body — "
+                        "0 of %d candidates matched", len(link_urls),
                     )
                 else:
                     gc.batch_update_document(doc_id, hl_result.requests)

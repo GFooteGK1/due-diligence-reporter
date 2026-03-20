@@ -218,6 +218,33 @@ LINK_TOKENS_V2: frozenset[str] = frozenset({
     "meta.drive_folder_url",
 })
 
+# Display labels for link tokens — shown in the doc instead of raw URLs.
+# Tokens not listed here fall back to the raw URL as display text.
+
+LINK_DISPLAY_LABELS_V1: dict[str, str] = {
+    "appendix.sir_link":                "View SIR",
+    "appendix.inspection_link":         "View Inspection",
+    "appendix.floorplan_viability_link": "View ISP",
+    "appendix.phase1_esa_link":         "View Phase I ESA",
+    "appendix.lidar_link":              "View LiDAR",
+    "appendix.as_built_link":           "View As-Built",
+    "appendix.pre_app_notes_link":      "View Pre-App Notes",
+    "appendix.school_registration_link": "View School Registration",
+    "appendix.permit_history_link":     "View Permit History",
+    "appendix.other_reports_links":     "View Other Reports",
+    "q2.renderings_link":              "View Renderings",
+    "meta.drive_folder_url":           "View Site Folder",
+}
+
+LINK_DISPLAY_LABELS_V2: dict[str, str] = {
+    "sources.sir_link":             "View SIR",
+    "sources.inspection_link":      "View Inspection",
+    "sources.isp_link":             "View ISP",
+    "sources.e_occupancy_link":     "View E-Occupancy",
+    "sources.school_approval_link": "View School Approval",
+    "meta.drive_folder_url":        "View Site Folder",
+}
+
 # V2 aliases — map V1-style agent keys to V2 canonical tokens
 AGENT_KEY_ALIASES_V2: dict[str, str] = {
     # ── top-level / site.* → meta.* ──────────────────────────────────────
