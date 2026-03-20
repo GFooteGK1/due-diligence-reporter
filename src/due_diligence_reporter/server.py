@@ -997,12 +997,17 @@ async def apply_e_occupancy_skill(
     no_outdoor_space: bool = False,
     shared_parking: bool = False,
     incompatible_tenants: bool = False,
+    site_name: str = "",
+    drive_folder_url: str = "",
 ) -> dict[str, Any]:
     """Apply the E-Occupancy Skill to score a building for educational use conversion.
 
     Evaluates the building's current use against the Alpha School E-Occupancy scoring
     matrix and returns a complete structured assessment. Call this tool in Step 4 after
     identifying the building's current use from source documents or the Wrike record.
+
+    If site_name and drive_folder_url are provided, the full assessment is automatically
+    saved as a Google Doc in the site's M1 subfolder and the doc_url is returned.
 
     Args:
         building_type_description: Free-form description of current building use
@@ -1016,10 +1021,12 @@ async def apply_e_occupancy_skill(
         no_outdoor_space: True if no access to outdoor space for students.
         shared_parking: True if parking is shared with other tenants.
         incompatible_tenants: True if other tenants are incompatible with school use.
+        site_name: Site name — pass to auto-publish the assessment as a Google Doc.
+        drive_folder_url: Site Drive folder URL — pass to auto-publish.
 
     Returns:
-        Dict with score, zone, tier, timeline, confidence, and ready-to-use
-        report_data_fields for q2.e_occupancy_*.
+        Dict with score, zone, tier, timeline, confidence, doc_url (if auto-published),
+        and ready-to-use report_data_fields for q2.e_occupancy_*.
     """
     logger.info(
         "Tool called: apply_e_occupancy_skill — building_type=%s, stories=%d",
@@ -1083,7 +1090,7 @@ async def apply_e_occupancy_skill(
 
     deduction_note = f"Deductions: {', '.join(deductions)}." if deductions else "No tenant deductions."
 
-    return {
+    result: dict[str, Any] = {
         "status": "success",
         "matched_building_type": matched_type,
         "base_score": base_score,
@@ -1106,10 +1113,30 @@ async def apply_e_occupancy_skill(
         ),
     }
 
+    # Auto-publish to Drive if site context provided
+    if site_name and drive_folder_url:
+        try:
+            pub = await save_skill_report(
+                skill_name="E-Occupancy",
+                site_name=site_name,
+                drive_folder_url=drive_folder_url,
+                skill_data=result,
+            )
+            if pub.get("status") == "success":
+                result["doc_url"] = pub["doc_url"]
+                result["doc_id"] = pub["doc_id"]
+                logger.info("Auto-published E-Occupancy assessment: %s", pub["doc_url"])
+        except Exception as e:
+            logger.warning("Failed to auto-publish E-Occupancy assessment: %s", e)
+
+    return result
+
 
 @mcp.tool()
 async def apply_school_approval_skill(
     state: str,
+    site_name: str = "",
+    drive_folder_url: str = "",
 ) -> dict[str, Any]:
     """Apply the School Approval Skill to determine registration requirements for a state.
 
@@ -1117,14 +1144,18 @@ async def apply_school_approval_skill(
     returns all registration requirements needed for Q1 — State School Registration.
     Call this tool in Step 5 using the state extracted from the site address.
 
+    If site_name and drive_folder_url are provided, the full assessment is automatically
+    saved as a Google Doc in the site's M1 subfolder and the doc_url is returned.
+
     Args:
         state: Two-letter US state abbreviation (e.g., "TX", "CA", "FL").
             Use "DC" for Washington D.C.
+        site_name: Site name — pass to auto-publish the assessment as a Google Doc.
+        drive_folder_url: Site Drive folder URL — pass to auto-publish.
 
     Returns:
-        Dict with approval_type, gating, timeline, steps, summary, and ready-to-use
-        report_data_fields for q1.state_school_registration, school_approval_type,
-        school_approval_gating, school_approval_timeline_days, steps_to_allow_operation.
+        Dict with approval_type, gating, timeline, steps, summary, doc_url (if
+        auto-published), and ready-to-use report_data_fields.
     """
     logger.info("Tool called: apply_school_approval_skill — state=%s", state)
 
@@ -1162,7 +1193,7 @@ async def apply_school_approval_skill(
             "Engage legal counsel early."
         )
 
-    return {
+    result: dict[str, Any] = {
         "status": "success",
         "state": state_upper,
         "score": score,
@@ -1185,6 +1216,24 @@ async def apply_school_approval_skill(
             f"{approval_type}, {timeline_days}-day timeline."
         ),
     }
+
+    # Auto-publish to Drive if site context provided
+    if site_name and drive_folder_url:
+        try:
+            pub = await save_skill_report(
+                skill_name="School Approval",
+                site_name=site_name,
+                drive_folder_url=drive_folder_url,
+                skill_data=result,
+            )
+            if pub.get("status") == "success":
+                result["doc_url"] = pub["doc_url"]
+                result["doc_id"] = pub["doc_id"]
+                logger.info("Auto-published School Approval assessment: %s", pub["doc_url"])
+        except Exception as e:
+            logger.warning("Failed to auto-publish School Approval assessment: %s", e)
+
+    return result
 
 
 @mcp.tool()
@@ -1527,7 +1576,7 @@ async def create_dd_report(
     site_name: str,
     drive_folder_url: str,
     report_data: dict[str, Any],
-    version: int = 1,
+    version: int = 2,
 ) -> dict[str, Any]:
     """Create a completed DD report Google Doc for a site.
 

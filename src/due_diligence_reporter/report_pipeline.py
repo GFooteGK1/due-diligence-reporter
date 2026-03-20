@@ -73,7 +73,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_e_occupancy_skill",
-        "description": "Apply E-Occupancy scoring to a building.",
+        "description": "Apply E-Occupancy scoring to a building. Pass site_name and drive_folder_url to auto-publish the assessment as a Google Doc in the M1 subfolder — the returned doc_url can be used as sources.e_occupancy_link.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -87,17 +87,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "no_outdoor_space": {"type": "boolean", "default": False},
                 "shared_parking": {"type": "boolean", "default": False},
                 "incompatible_tenants": {"type": "boolean", "default": False},
+                "site_name": {"type": "string", "default": "", "description": "Site name — pass to auto-publish assessment to Drive"},
+                "drive_folder_url": {"type": "string", "default": "", "description": "Site Drive folder URL — pass to auto-publish"},
             },
             "required": ["building_type_description", "stories"],
         },
     },
     {
         "name": "apply_school_approval_skill",
-        "description": "Determine school registration requirements for a US state.",
+        "description": "Determine school registration requirements for a US state. Pass site_name and drive_folder_url to auto-publish the assessment as a Google Doc in the M1 subfolder — the returned doc_url can be used as sources.school_approval_link.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "state": {"type": "string", "description": "Two-letter US state abbreviation"},
+                "site_name": {"type": "string", "default": "", "description": "Site name — pass to auto-publish assessment to Drive"},
+                "drive_folder_url": {"type": "string", "default": "", "description": "Site Drive folder URL — pass to auto-publish"},
             },
             "required": ["state"],
         },
@@ -134,7 +138,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "site_name": {"type": "string"},
                 "drive_folder_url": {"type": "string"},
                 "report_data": {"type": "object"},
-                "version": {"type": "integer", "default": 1, "description": "Report version (1 = V1 template, 2 = V2 template)"},
+                "version": {"type": "integer", "default": 2, "description": "Report version (1 = V1 template, 2 = V2 template)"},
             },
             "required": ["site_name", "drive_folder_url", "report_data"],
         },
