@@ -51,9 +51,9 @@ def test_no_alias_is_also_a_template_token():
 
 
 def test_token_count():
-    """Template has exactly 27 tokens — guards accidental additions/removals."""
-    assert len(TEMPLATE_TOKENS) == 27, (
-        f"Expected 27 tokens, got {len(TEMPLATE_TOKENS)}"
+    """Template has exactly 28 tokens — guards accidental additions/removals."""
+    assert len(TEMPLATE_TOKENS) == 28, (
+        f"Expected 28 tokens, got {len(TEMPLATE_TOKENS)}"
     )
 
 

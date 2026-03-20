@@ -422,18 +422,17 @@ Rules:
 - Calculate target date by summing permit + review + construction timelines from today
 - If multiple spec tiers have different timelines, show each
 
-**`exec_summary.acquisition_conditions` — Lease/Purchase Conditions + Risks**
-```
-Conditions:
-- [Only items that should appear as conditions in the lease/purchase agreement]
-- [e.g., "Condition lease on traffic study completion"]
+**`exec.acquisition_conditions` — Contractual Lease Conditions**
+Bullet list of items that must be written into the lease/purchase agreement. Each bullet cites its source.
+See "exec — Contractual Lease Conditions" in the schema section below for the full classification key.
 
-Risks to note:
-- [Items that aren't contractual conditions but leadership should be aware of]
-```
+**`exec.risk_notes` — Informational Risk Notes**
+Bullet list of items leadership should know about but that don't belong in the lease. Each bullet cites its source.
+See "exec — Informational Risk Notes" in the schema section below for the full classification key.
+
 Rules:
-- "Conditions" = things to literally write into the contract
-- "Risks to note" = informational flags, NOT recommendations
+- "Conditions" = things to literally write into the contract (would we walk away if not addressed?)
+- "Risk notes" = informational flags for budgeting/planning, NOT recommendations
 - No "executive review recommended" or "consider before proceeding" language
 
 ### Step 6 — Generate the V2 report
@@ -450,10 +449,11 @@ evidence = {
     "exec.e_mvp_cost": "get_cost_estimate returned $850,000 midpoint for 3,066 SF with 4 rooms",
     "exec.f_mvp_ready": "SIR: permit timeline 10 weeks + construction est. 12 weeks from today = 07/27",
     "exec.acquisition_conditions": "SIR: traffic study required by City of Franklin; Building Inspection: State Fire Marshal sequential blocker",
+    "exec.risk_notes": "Building Inspection: fire alarm >15 years old, modernization recommended; get_cost_estimate: midpoint $850,000 for 3,066 SF",
 }
 ```
 
-Keep evidence short (1-2 sentences) — quote the source, cite the page/section if available. For skill tool outputs, note the key return values. For synthesized fields (`c_answer`, `f_mvp_ready`, `acquisition_conditions`), cite the inputs that drove the conclusion.
+Keep evidence short (1-2 sentences) — quote the source, cite the page/section if available. For skill tool outputs, note the key return values. For synthesized fields (`c_answer`, `f_mvp_ready`, `acquisition_conditions`, `risk_notes`), cite the inputs that drove the conclusion.
 
 ### Step 7 — Verify completeness
 Call `check_report_completeness(doc_id)`. If any `{{token}}` placeholders remain, attempt to fill them. `[Not found — ...]` labels are acceptable and not blocking.
@@ -474,7 +474,7 @@ If a document was not found in Step 2, use sourced gap labels for every field th
 
 ## Report Data Schema (create_dd_report)
 
-The V2 report is an **executive one-pager**. 23 tokens total. The agent still reads all documents and runs all skill tools — the difference is in what gets written to the template.
+The V2 report is an **executive one-pager**. 24 tokens total. The agent still reads all documents and runs all skill tools — the difference is in what gets written to the template.
 
 When you call `create_dd_report`, the `report_data` dict must use the **exact keys** listed below. Keys that don't match a V2 template token are silently dropped.
 
@@ -533,19 +533,65 @@ These 3 tokens are computed automatically by `create_dd_report` from the MVP/Ide
 | `exec.delta_cost` | ideal_cost − mvp_cost | `+$105,000` |
 | `exec.delta_ready` | ideal_ready − mvp_ready | `+3 mo` |
 
-### exec — Conditions
+### exec — Contractual Lease Conditions
 
 | Token | Source | Format |
 |---|---|---|
-| `exec.acquisition_conditions` | Agent (synthesize from all sources) | Free-text bullet list |
+| `exec.acquisition_conditions` | Agent (synthesize from SIR + Building Inspection) | Bullet list with source citations |
+
+Items that must appear as conditions in the lease/purchase agreement. Each bullet must cite its source document.
+
+**From the SIR:**
+- City/county requires a traffic study, environmental study, or other pre-condition → condition lease on study completion
+- Zoning variance, CUP, or SUP required and not yet approved → condition lease on zoning approval
+- Pre-application meeting required and outcome unknown → condition lease on pre-app outcome
+- AHJ has flagged a sequential blocker (e.g., State Fire Marshal review before City permit) → condition lease on AHJ clearance
+- Environmental contamination or Phase I ESA flags action items → condition lease on environmental clearance
+
+**From the Building Inspection:**
+- Any **Critical / Occupancy-Blocking** deficiency → condition lease on landlord remediation OR price adjustment
+  - Sprinkler system absent (required for E-occupancy)
+  - Insufficient toilet fixtures (blocks occupancy certificate)
+  - ADA ramp missing (no accessible path of travel)
+  - Panic hardware missing on exit doors (life-safety violation)
+  - Fire-rated separation missing between tenant spaces
+- Shared building systems where landlord controls access (shared HVAC, shared electrical, shared water heater) → condition lease on guaranteed access/capacity
+
+**Classification test:** "Would we walk away or require the landlord to act if this were not addressed before signing?" If yes → Condition.
 
 Format:
 ```
-Conditions:
-- [contractual items for the lease/purchase agreement]
+- Condition lease on State Fire Marshal review (SIR: "State Fire Marshal review is sequential — must complete before City building permit")
+- Condition lease on ADA ramp installation by landlord (Building Inspection: "No exterior ADA ramp — occupancy-blocking")
+```
 
-Risks to note:
-- [informational flags, NOT recommendations]
+### exec — Informational Risk Notes
+
+| Token | Source | Format |
+|---|---|---|
+| `exec.risk_notes` | Agent (synthesize from Building Inspection + cost analysis) | Bullet list with source citations |
+
+Items leadership should be aware of but that don't belong in the lease.
+
+**From the Building Inspection:**
+- Fire alarm >15 years old, modernization recommended (cost risk, not a blocker)
+- HVAC replacement recommended but functional
+- ADA deficiencies addressable during buildout (door hardware, signage, counter heights)
+- Electrical capacity concerns
+- Ceiling/finish work scope
+
+**From cost analysis / other:**
+- Cost estimate exceeds typical range
+- Permit timeline longer than standard
+- Large construction scope
+- Multi-tenant coordination required
+
+**Classification test:** "Is this something we'll handle during buildout or budget for, not something the landlord must address first?" If yes → Risk to note.
+
+Format:
+```
+- Fire alarm ~20 years old; modernization likely during buildout (Building Inspection: "Conventional fire alarm, estimated >15 years, modernization recommended")
+- Cost estimate at $850K+ for minimum viable spec (get_cost_estimate: midpoint $850,000 for 3,066 SF)
 ```
 
 ### sources — Document links (6 rows)

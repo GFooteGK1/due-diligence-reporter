@@ -47,6 +47,7 @@ TEMPLATE_TOKENS: list[str] = [
     "exec.delta_ready",
     # ── exec: conditions ──────────────────────────────────────────────────
     "exec.acquisition_conditions",
+    "exec.risk_notes",
     # ── sources (document links — 6 rows) ─────────────────────────────────
     "sources.sir_link",
     "sources.inspection_link",
@@ -88,6 +89,7 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.delta_ready":             "Computed",
     # ── exec: conditions ───────────────────────────────────────────────────
     "exec.acquisition_conditions":  "Agent",
+    "exec.risk_notes":              "Agent",
 }
 
 # ---------------------------------------------------------------------------
@@ -136,6 +138,7 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "site.prepared_by":     "meta.prepared_by",
     # ── exec_summary.* → exec.* (legacy agent output) ────────────────────
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
+    "exec_summary.risk_notes":             "exec.risk_notes",
     # ── backward compat: old token names → new names ─────────────────────
     "exec.c_permitting":                  "exec.c_edreg",
     "exec.f_ready_mm_yy":                 "exec.f_mvp_ready",
