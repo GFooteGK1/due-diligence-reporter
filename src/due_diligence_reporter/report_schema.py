@@ -162,20 +162,30 @@ TEMPLATE_TOKENS_V2: list[str] = [
     "meta.report_date",
     "meta.prepared_by",
     "meta.drive_folder_url",
-    # ── exec (structured executive summary) ───────────────────────────────
+    # ── exec: "Can we do this?" card (pick-menu dimensions) ───────────────
     "exec.c_answer",
     "exec.c_permitting",
     "exec.c_occupancy",
     "exec.c_zoning",
-    "exec.c_conditions",
-    "exec.d_cost_summary",
-    "exec.f_ready_mm_yy",
-    "exec.f_timeline",
+    # ── exec: cost / capacity / timeline grid (bare values) ───────────────
+    "exec.e_mvp_capacity",
+    "exec.e_ideal_capacity",
+    "exec.e_mvp_cost",
+    "exec.e_ideal_cost",
+    "exec.f_mvp_ready",
+    "exec.f_ideal_ready",
+    # ── exec: delta column (server-computed, NOT agent-filled) ──────────
+    "exec.delta_capacity",
+    "exec.delta_cost",
+    "exec.delta_ready",
+    # ── exec: conditions ──────────────────────────────────────────────────
     "exec.acquisition_conditions",
-    # ── sources (document links) ──────────────────────────────────────────
+    # ── sources (document links — 5 rows) ─────────────────────────────────
     "sources.sir_link",
     "sources.inspection_link",
     "sources.isp_link",
+    "sources.e_occupancy_link",
+    "sources.school_approval_link",
 ]
 
 TEMPLATE_TOKEN_V2_SET: frozenset[str] = frozenset(TEMPLATE_TOKENS_V2)
@@ -194,6 +204,10 @@ AGENT_KEY_ALIASES_V2: dict[str, str] = {
     "site.prepared_by":     "meta.prepared_by",
     # ── exec_summary.* → exec.* (V1 agent output → V2 tokens) ───────────
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
+    # ── backward compat: old timeline tokens → new split tokens ──────────
+    "exec.f_ready_mm_yy":                 "exec.f_mvp_ready",
+    # ── typo alias ────────────────────────────────────────────────────────
+    "exec.e_ideal_capcity":               "exec.e_ideal_capacity",
     # ── appendix.* → sources.* ───────────────────────────────────────────
     "appendix.sir_link":                   "sources.sir_link",
     "appendix.inspection_link":            "sources.inspection_link",
@@ -377,3 +391,97 @@ def normalize_report_data_v2(
         logger.debug("Unfilled V2 tokens: %s", sorted(unfilled_tokens))
 
     return replacements, sorted(unmatched_keys), sorted(unfilled_tokens)
+
+
+# ---------------------------------------------------------------------------
+# V2 delta computation (server-side, not agent-filled)
+# ---------------------------------------------------------------------------
+
+
+def _parse_dollar(value: str) -> int | None:
+    """Parse a dollar string like '$185,000' into an integer (185000)."""
+    cleaned = value.replace("$", "").replace(",", "").strip()
+    try:
+        return int(cleaned)
+    except ValueError:
+        try:
+            return int(float(cleaned))
+        except ValueError:
+            return None
+
+
+def _format_dollar(amount: int) -> str:
+    """Format an integer as a dollar string like '$105,000'."""
+    if amount < 0:
+        return f"-${abs(amount):,}"
+    return f"${amount:,}"
+
+
+def _parse_mm_yy(value: str) -> tuple[int, int] | None:
+    """Parse 'MM/YY' into (month, year_2digit). Returns None on failure."""
+    parts = value.strip().split("/")
+    if len(parts) != 2:
+        return None
+    try:
+        month, year = int(parts[0]), int(parts[1])
+        if 1 <= month <= 12 and 0 <= year <= 99:
+            return month, year
+        return None
+    except ValueError:
+        return None
+
+
+def _month_diff(mvp: tuple[int, int], ideal: tuple[int, int]) -> int:
+    """Compute month difference (ideal - mvp) from (month, year_2digit) tuples."""
+    mvp_total = mvp[1] * 12 + mvp[0]
+    ideal_total = ideal[1] * 12 + ideal[0]
+    return ideal_total - mvp_total
+
+
+def compute_v2_deltas(replacements: dict[str, str]) -> None:
+    """Compute delta column values from MVP/Ideal pairs and inject into *replacements*.
+
+    Computes:
+        - ``exec.delta_capacity`` = ideal_capacity - mvp_capacity (integer)
+        - ``exec.delta_cost`` = ideal_cost - mvp_cost (dollar formatted)
+        - ``exec.delta_ready`` = ideal_ready - mvp_ready (e.g. "+3 mo")
+
+    Only sets each delta if both source values are present and parseable.
+    Existing values are not overwritten.
+    """
+    # Capacity delta
+    mvp_cap = replacements.get("exec.e_mvp_capacity", "").strip()
+    ideal_cap = replacements.get("exec.e_ideal_capacity", "").strip()
+    if mvp_cap and ideal_cap and "exec.delta_capacity" not in replacements:
+        try:
+            delta = int(ideal_cap) - int(mvp_cap)
+            sign = "+" if delta > 0 else ""
+            replacements["exec.delta_capacity"] = f"{sign}{delta}"
+        except ValueError:
+            logger.debug("Could not compute capacity delta: mvp=%s, ideal=%s", mvp_cap, ideal_cap)
+
+    # Cost delta
+    mvp_cost = replacements.get("exec.e_mvp_cost", "").strip()
+    ideal_cost = replacements.get("exec.e_ideal_cost", "").strip()
+    if mvp_cost and ideal_cost and "exec.delta_cost" not in replacements:
+        mvp_val = _parse_dollar(mvp_cost)
+        ideal_val = _parse_dollar(ideal_cost)
+        if mvp_val is not None and ideal_val is not None:
+            delta = ideal_val - mvp_val
+            sign = "+" if delta > 0 else ""
+            replacements["exec.delta_cost"] = f"{sign}{_format_dollar(delta)}"
+        else:
+            logger.debug("Could not parse cost values: mvp=%s, ideal=%s", mvp_cost, ideal_cost)
+
+    # Timeline delta
+    mvp_ready = replacements.get("exec.f_mvp_ready", "").strip()
+    ideal_ready = replacements.get("exec.f_ideal_ready", "").strip()
+    if mvp_ready and ideal_ready and "exec.delta_ready" not in replacements:
+        mvp_parsed = _parse_mm_yy(mvp_ready)
+        ideal_parsed = _parse_mm_yy(ideal_ready)
+        if mvp_parsed and ideal_parsed:
+            diff = _month_diff(mvp_parsed, ideal_parsed)
+            sign = "+" if diff > 0 else ""
+            replacements["exec.delta_ready"] = f"{sign}{diff} mo"
+        else:
+            logger.debug("Could not parse timeline values: mvp=%s, ideal=%s", mvp_ready, ideal_ready)

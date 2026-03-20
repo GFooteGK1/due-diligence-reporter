@@ -384,6 +384,76 @@ class GoogleClient:
             logger.error("Failed to get document %s: %s", document_id, error)
             raise RuntimeError(f"Failed to get document: {error}") from error
 
+    # ---------- Docs: Create New Document ----------
+
+    def create_document(
+        self,
+        name: str,
+        folder_id: str,
+        text_content: str,
+    ) -> dict[str, Any]:
+        """Create a new Google Doc with *text_content* in *folder_id*.
+
+        Steps:
+            1. ``documents().create()`` — creates a blank doc.
+            2. ``documents().batchUpdate()`` with ``insertText`` — writes content.
+            3. ``drive.files().update()`` — moves the doc into *folder_id*.
+
+        Returns dict with keys: ``id``, ``name``, ``webViewLink``.
+        """
+        logger.info("Creating document '%s' in folder %s", name, folder_id)
+
+        try:
+            # 1. Create blank doc
+            doc = (
+                self.docs_service.documents()
+                .create(body={"title": name})
+                .execute()
+            )
+            doc_id: str = doc["documentId"]
+
+            # 2. Insert text content
+            if text_content:
+                self.docs_service.documents().batchUpdate(
+                    documentId=doc_id,
+                    body={
+                        "requests": [
+                            {
+                                "insertText": {
+                                    "location": {"index": 1},
+                                    "text": text_content,
+                                }
+                            }
+                        ]
+                    },
+                ).execute()
+
+            # 3. Move into target folder (remove default 'My Drive' parent, add folder_id)
+            self.drive_service.files().update(
+                fileId=doc_id,
+                addParents=folder_id,
+                removeParents="root",
+                fields="id,name,webViewLink",
+                supportsAllDrives=True,
+            ).execute()
+
+            # 4. Fetch final metadata
+            result = (
+                self.drive_service.files()
+                .get(
+                    fileId=doc_id,
+                    fields="id,name,webViewLink",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            logger.info("Created document '%s' (id: %s)", name, doc_id)
+            return result
+
+        except HttpError as error:
+            logger.error("Failed to create document '%s': %s", name, error)
+            raise RuntimeError(f"Failed to create document: {error}") from error
+
     # ---------- Drive Upload ----------
 
     def upload_file_to_folder(

@@ -6,9 +6,14 @@ import pytest
 
 from due_diligence_reporter.report_schema import (
     AGENT_KEY_ALIASES,
+    AGENT_KEY_ALIASES_V2,
     TEMPLATE_TOKEN_SET,
+    TEMPLATE_TOKEN_V2_SET,
     TEMPLATE_TOKENS,
+    TEMPLATE_TOKENS_V2,
+    compute_v2_deltas,
     normalize_report_data,
+    normalize_report_data_v2,
 )
 
 
@@ -228,3 +233,292 @@ def test_q4_milestone_schedule_aliases():
     assert replacements.get("q4.construction_locked_date") == "2026-08-01"
     assert replacements.get("q4.co_date") == "2026-12-01"
     assert replacements.get("q4.ready_to_open_date") == "2027-01-15"
+
+
+# ===========================================================================
+# V2 Report Schema Tests
+# ===========================================================================
+
+
+class TestV2SchemaIntegrity:
+    """Schema integrity tests for V2 template tokens and aliases."""
+
+    def test_v2_no_duplicate_tokens(self):
+        """Every token in TEMPLATE_TOKENS_V2 must appear exactly once."""
+        seen: set[str] = set()
+        dupes: list[str] = []
+        for token in TEMPLATE_TOKENS_V2:
+            if token in seen:
+                dupes.append(token)
+            seen.add(token)
+        assert dupes == [], f"Duplicate V2 template tokens: {dupes}"
+
+    def test_v2_set_matches_list(self):
+        """TEMPLATE_TOKEN_V2_SET must contain exactly the same items as TEMPLATE_TOKENS_V2."""
+        assert TEMPLATE_TOKEN_V2_SET == frozenset(TEMPLATE_TOKENS_V2)
+
+    def test_v2_all_aliases_point_to_valid_tokens(self):
+        """Every V2 alias target must exist in TEMPLATE_TOKEN_V2_SET."""
+        bad = {
+            alias: target
+            for alias, target in AGENT_KEY_ALIASES_V2.items()
+            if target not in TEMPLATE_TOKEN_V2_SET
+        }
+        assert bad == {}, f"V2 aliases pointing to invalid tokens: {bad}"
+
+    def test_v2_no_alias_is_also_a_token(self):
+        """A V2 alias key should not itself be a canonical V2 template token."""
+        overlap = {k for k in AGENT_KEY_ALIASES_V2 if k in TEMPLATE_TOKEN_V2_SET}
+        assert overlap == set(), f"V2 alias keys that are also template tokens: {overlap}"
+
+    def test_v2_token_count(self):
+        """V2 template has exactly 26 tokens — guards accidental additions/removals."""
+        assert len(TEMPLATE_TOKENS_V2) == 26, (
+            f"Expected 26 V2 tokens, got {len(TEMPLATE_TOKENS_V2)}"
+        )
+
+
+class TestV2Normalization:
+    """Normalization tests for V2 report data."""
+
+    def test_v2_normalize_direct_match(self):
+        """exec.*, sources.*, meta.* keys pass through unchanged."""
+        report_data = {
+            "exec": {
+                "c_answer": "YES",
+                "e_mvp_capacity": "36",
+                "e_ideal_capacity": "54",
+                "e_mvp_cost": "$185,000",
+                "e_ideal_cost": "$290,000",
+                "f_mvp_ready": "01/27",
+                "f_ideal_ready": "04/27",
+            },
+            "sources": {
+                "sir_link": "https://example.com/sir",
+                "e_occupancy_link": "https://example.com/eocc",
+            },
+            "meta": {"site_name": "Alpha Test"},
+        }
+        replacements, unmatched, unfilled = normalize_report_data_v2(
+            report_data, site_name="Alpha Test", report_date="03/19/2026",
+        )
+        assert replacements["exec.c_answer"] == "YES"
+        assert replacements["exec.e_mvp_capacity"] == "36"
+        assert replacements["exec.e_ideal_capacity"] == "54"
+        assert replacements["exec.e_mvp_cost"] == "$185,000"
+        assert replacements["exec.e_ideal_cost"] == "$290,000"
+        assert replacements["exec.f_mvp_ready"] == "01/27"
+        assert replacements["exec.f_ideal_ready"] == "04/27"
+        assert replacements["sources.sir_link"] == "https://example.com/sir"
+        assert replacements["sources.e_occupancy_link"] == "https://example.com/eocc"
+        assert replacements["meta.site_name"] == "Alpha Test"
+
+    def test_v2_normalize_alias(self):
+        """V2 aliases resolve correctly (appendix.* → sources.*, etc.)."""
+        report_data = {
+            "appendix": {
+                "sir_link": "https://example.com/sir",
+                "inspection_link": "https://example.com/insp",
+                "isp_link": "https://example.com/isp",
+            },
+        }
+        replacements, _, _ = normalize_report_data_v2(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert replacements.get("sources.sir_link") == "https://example.com/sir"
+        assert replacements.get("sources.inspection_link") == "https://example.com/insp"
+        assert replacements.get("sources.isp_link") == "https://example.com/isp"
+
+    def test_v2_alias_no_overwrite(self):
+        """Canonical V2 token wins when both alias and canonical are present."""
+        report_data = {
+            "sources": {"sir_link": "CANONICAL"},
+            "appendix": {"sir_link": "ALIAS"},
+        }
+        replacements, _, _ = normalize_report_data_v2(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert replacements["sources.sir_link"] == "CANONICAL"
+
+    def test_v2_unmatched_v1_keys(self):
+        """V1-only keys (q1.*, q3.*) appear in the unmatched list for V2."""
+        report_data = {
+            "q1": {"zoning_designation": "C-2"},
+            "q3": {"structural_low": "24,000"},
+        }
+        _, unmatched, _ = normalize_report_data_v2(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert "q1.zoning_designation" in unmatched
+        assert "q3.structural_low" in unmatched
+
+    def test_v2_unfilled_tokens(self):
+        """Empty data → all V2 tokens minus defaults are unfilled."""
+        _, _, unfilled = normalize_report_data_v2(
+            {}, site_name="Test", report_date="01/01/2026",
+        )
+        # meta.site_name and meta.report_date are auto-injected
+        assert "meta.site_name" not in unfilled
+        assert "meta.report_date" not in unfilled
+        # Everything else should be unfilled
+        assert "exec.c_answer" in unfilled
+        assert "exec.e_mvp_capacity" in unfilled
+        assert "exec.f_mvp_ready" in unfilled
+        assert "exec.delta_capacity" in unfilled
+        assert "exec.delta_cost" in unfilled
+        assert "exec.delta_ready" in unfilled
+        assert "sources.sir_link" in unfilled
+        assert "sources.e_occupancy_link" in unfilled
+        assert "sources.school_approval_link" in unfilled
+
+    def test_v2_meta_defaults(self):
+        """site_name and report_date are auto-injected into V2 replacements."""
+        replacements, _, _ = normalize_report_data_v2(
+            {}, site_name="Alpha Metro", report_date="03/19/2026",
+        )
+        assert replacements["meta.site_name"] == "Alpha Metro"
+        assert replacements["meta.report_date"] == "03/19/2026"
+
+    def test_v2_pick_menu_tokens_pass_through(self):
+        """Pick-menu dimension tokens (c_zoning, c_permitting, c_occupancy) pass through."""
+        report_data = {
+            "exec": {
+                "c_zoning": "Permitted by right",
+                "c_permitting": "Not required",
+                "c_occupancy": "Has E-Occupancy",
+            },
+        }
+        replacements, _, _ = normalize_report_data_v2(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert replacements["exec.c_zoning"] == "Permitted by right"
+        assert replacements["exec.c_permitting"] == "Not required"
+        assert replacements["exec.c_occupancy"] == "Has E-Occupancy"
+
+    def test_v2_backward_compat_timeline_alias(self):
+        """Old exec.f_ready_mm_yy aliases to exec.f_mvp_ready."""
+        report_data = {
+            "exec": {"f_ready_mm_yy": "09/27"},
+        }
+        replacements, _, _ = normalize_report_data_v2(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert replacements.get("exec.f_mvp_ready") == "09/27"
+
+    def test_v2_typo_alias_ideal_capacity(self):
+        """Typo alias exec.e_ideal_capcity → exec.e_ideal_capacity."""
+        report_data = {
+            "exec": {"e_ideal_capcity": "54"},
+        }
+        replacements, _, _ = normalize_report_data_v2(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert replacements.get("exec.e_ideal_capacity") == "54"
+
+
+class TestV2DeltaComputation:
+    """Tests for server-computed delta column values."""
+
+    def test_all_deltas_computed(self):
+        """Given valid MVP and Ideal values, all 3 deltas are computed."""
+        replacements = {
+            "exec.e_mvp_capacity": "36",
+            "exec.e_ideal_capacity": "54",
+            "exec.e_mvp_cost": "$185,000",
+            "exec.e_ideal_cost": "$290,000",
+            "exec.f_mvp_ready": "01/27",
+            "exec.f_ideal_ready": "04/27",
+        }
+        compute_v2_deltas(replacements)
+
+        assert replacements["exec.delta_capacity"] == "+18"
+        assert replacements["exec.delta_cost"] == "+$105,000"
+        assert replacements["exec.delta_ready"] == "+3 mo"
+
+    def test_zero_delta(self):
+        """When MVP and Ideal are equal, deltas show zero."""
+        replacements = {
+            "exec.e_mvp_capacity": "36",
+            "exec.e_ideal_capacity": "36",
+            "exec.e_mvp_cost": "$185,000",
+            "exec.e_ideal_cost": "$185,000",
+            "exec.f_mvp_ready": "01/27",
+            "exec.f_ideal_ready": "01/27",
+        }
+        compute_v2_deltas(replacements)
+
+        assert replacements["exec.delta_capacity"] == "0"
+        assert replacements["exec.delta_cost"] == "$0"
+        assert replacements["exec.delta_ready"] == "0 mo"
+
+    def test_negative_cost_delta(self):
+        """If ideal is cheaper than MVP (unlikely but possible), delta is negative."""
+        replacements = {
+            "exec.e_mvp_cost": "$290,000",
+            "exec.e_ideal_cost": "$185,000",
+        }
+        compute_v2_deltas(replacements)
+
+        assert replacements["exec.delta_cost"] == "-$105,000"
+
+    def test_missing_values_no_delta(self):
+        """If one side is missing, delta is not injected."""
+        replacements = {
+            "exec.e_mvp_capacity": "36",
+            # ideal_capacity missing
+            "exec.e_mvp_cost": "$185,000",
+            # ideal_cost missing
+        }
+        compute_v2_deltas(replacements)
+
+        assert "exec.delta_capacity" not in replacements
+        assert "exec.delta_cost" not in replacements
+        assert "exec.delta_ready" not in replacements
+
+    def test_unparseable_values_no_delta(self):
+        """If values can't be parsed, delta is skipped gracefully."""
+        replacements = {
+            "exec.e_mvp_capacity": "thirty-six",
+            "exec.e_ideal_capacity": "54",
+            "exec.e_mvp_cost": "unknown",
+            "exec.e_ideal_cost": "$290,000",
+            "exec.f_mvp_ready": "Jan 2027",
+            "exec.f_ideal_ready": "04/27",
+        }
+        compute_v2_deltas(replacements)
+
+        assert "exec.delta_capacity" not in replacements
+        assert "exec.delta_cost" not in replacements
+        assert "exec.delta_ready" not in replacements
+
+    def test_existing_delta_not_overwritten(self):
+        """If a delta value already exists, it is not overwritten."""
+        replacements = {
+            "exec.e_mvp_capacity": "36",
+            "exec.e_ideal_capacity": "54",
+            "exec.delta_capacity": "MANUAL",
+        }
+        compute_v2_deltas(replacements)
+
+        assert replacements["exec.delta_capacity"] == "MANUAL"
+
+    def test_cross_year_timeline_delta(self):
+        """Timeline delta works across year boundaries."""
+        replacements = {
+            "exec.f_mvp_ready": "11/26",
+            "exec.f_ideal_ready": "02/27",
+        }
+        compute_v2_deltas(replacements)
+
+        assert replacements["exec.delta_ready"] == "+3 mo"
+
+
+class TestV2PipelineToolDefinitions:
+    """Verify save_skill_report is registered in the pipeline."""
+
+    def test_save_skill_report_tool_exists(self):
+        """save_skill_report must be in TOOL_DEFINITIONS."""
+        from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
+
+        tool_names = [t["name"] for t in TOOL_DEFINITIONS]
+        assert "save_skill_report" in tool_names

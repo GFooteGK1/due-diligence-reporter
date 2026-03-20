@@ -364,10 +364,15 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 
 **Do not skip reading a document that was found.** Every found document must be read and its data extracted.
 
-### Step 5 — Apply skill tools
+### Step 5 — Apply skill tools and publish assessments
 - `apply_e_occupancy_skill(...)` with data from the building inspection
 - `apply_school_approval_skill(state)` from the site address
 - `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list (if ISP was found)
+
+**After each skill call, publish the result as a standalone doc:**
+1. Call `save_skill_report(skill_name="E-Occupancy", site_name=..., drive_folder_url=..., content=<message field from apply_e_occupancy_skill result>)`
+2. Call `save_skill_report(skill_name="School Approval", site_name=..., drive_folder_url=..., content=<message field from apply_school_approval_skill result>)`
+3. Include the returned `doc_url` values in `report_data` as `sources.e_occupancy_link` and `sources.school_approval_link`
 
 ### Executive Summary Format
 
@@ -453,7 +458,7 @@ If a document was not found in Step 2, use sourced gap labels for every field th
 
 ## V2 Report Data Schema (create_dd_report with version=2)
 
-The V2 report is an **executive one-pager**. Only 20 tokens. The agent still reads all documents and runs all skill tools — the difference is in what gets written to the template.
+The V2 report is an **executive one-pager**. 23 tokens total. The agent still reads all documents and runs all skill tools — the difference is in what gets written to the template.
 
 When you call `create_dd_report`, the `report_data` dict must use the **exact keys** listed below. Keys that don't match a V2 template token are silently dropped.
 
@@ -473,59 +478,52 @@ You may pass keys as either:
 | `meta.prepared_by` | Author (e.g., "DD Report Agent") | Set to "DD Report Agent" |
 | `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
 
-### exec — Executive summary cards
+### exec — "Can we do this?" card (pick-menu dimensions)
 
-These populate the four question cards and the acquisition conditions table.
+Each dimension uses a **fixed option menu**. Pick exactly one option per field based on the data.
 
-| Token | Description | Source |
+| Token | Options (pick one) |
+|---|---|
+| `exec.c_answer` | `YES` / `NO` / `CONDITIONAL` |
+| `exec.c_permitting` | `Not required` / `Required and have done` / `Required have not done` |
+| `exec.c_occupancy` | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
+| `exec.c_zoning` | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
+
+### exec — Cost / Capacity / Timeline grid (bare values)
+
+The template provides labels — the agent fills only the values. No dollar signs in capacity fields, no units in cost fields beyond the `$`.
+
+| Token | Format | Example |
 |---|---|---|
-| `exec.c_answer` | Top-line answer for "Can we do this?" — YES / YES WITH CONDITIONS / NO | Synthesize from Q1 data |
-| `exec.c_permitting` | Permitting status one-liner (e.g., "CUP required, 6-8 week timeline") | SIR |
-| `exec.c_occupancy` | Occupancy path (e.g., "Needs change of use from M to E occupancy") | Building inspection + E-Occupancy skill |
-| `exec.c_zoning` | Zoning status (e.g., "C-2 Commercial, schools permitted by right") | SIR |
-| `exec.c_conditions` | Conditions under "Can we do this?" card (e.g., "Sprinkler installation required before CO") | Synthesize from all sources |
-| `exec.d_cost_summary` | Cost by capacity tier (see Executive Summary Format) | Building Optimizer + Wrike comments |
-| `exec.f_ready_mm_yy` | Target opening date in MM/YY format (e.g., "09/27") | Sum permit + construction timelines from today |
-| `exec.f_timeline` | Per-tier timeline breakdown (see Executive Summary Format) | SIR + building inspection + school approval |
-| `exec.acquisition_conditions` | Lease/purchase conditions + risks to note (see Executive Summary Format) | Synthesize from all Qs |
+| `exec.e_mvp_capacity` | Integer (students) | `36` |
+| `exec.e_ideal_capacity` | Integer (students) | `54` |
+| `exec.e_mvp_cost` | Dollar amount | `$185,000` |
+| `exec.e_ideal_cost` | Dollar amount | `$290,000` |
+| `exec.f_mvp_ready` | MM/YY | `01/27` |
+| `exec.f_ideal_ready` | MM/YY | `04/27` |
 
-### sources — Document links
+Rules:
+- Cost = single midpoint number (50% confidence), NOT a range. Wrike comments override API numbers.
+- Timeline = MM/YY format only. Never "Fall 2027" or season names.
+- Capacity = student count from ISP tier analysis.
 
-| Token | Description | Source |
+### exec — Delta column (server-computed, do NOT fill)
+
+These 3 tokens are computed automatically by `create_dd_report` from the MVP/Ideal pairs above. The agent must **not** include them in `report_data`.
+
+| Token | Computed as | Example |
 |---|---|---|
-| `sources.sir_link` | Link to SIR document in Drive | Drive file link |
-| `sources.inspection_link` | Link to building inspection report | Drive file link |
-| `sources.isp_link` | Link to ISP / Program Fit Analysis | Drive file link |
+| `exec.delta_capacity` | ideal_capacity − mvp_capacity | `+18` |
+| `exec.delta_cost` | ideal_cost − mvp_cost | `+$105,000` |
+| `exec.delta_ready` | ideal_ready − mvp_ready | `+3 mo` |
 
-### How exec fields map to the Executive Summary Format
+### exec — Conditions
 
-**`exec.c_answer`** — One of: `YES`, `YES WITH CONDITIONS`, `NO`
+| Token | Format |
+|---|---|
+| `exec.acquisition_conditions` | Free-text bullet list |
 
-**`exec.c_permitting`**, **`exec.c_occupancy`**, **`exec.c_zoning`** — One fact-only line each. No editorializing.
-
-**`exec.c_conditions`** — Bullet list of conditions specific to the "Can we do this?" card:
-```
-- [condition 1]
-- [condition 2]
-```
-
-**`exec.d_cost_summary`** — Cost by Capacity Tier:
-```
-Minimum work: $[single number] for [capacity] students ([brief scope note])
-Ideal spec: $[single number] for [capacity] students ([brief scope note])
-```
-Rules: one number per tier (midpoint at 50% confidence), NOT a range. Wrike comments override API numbers.
-
-**`exec.f_ready_mm_yy`** — Single MM/YY date (e.g., `09/27`). Never "Fall 2027" or season names.
-
-**`exec.f_timeline`** — Per-tier timeline breakdown:
-```
-[Tier name]: [permit 1] = [X weeks], [permit 2] = [Y weeks] ([concurrent/sequential]).
-[N] review rounds expected. Construction: [Z weeks] from permits in hand.
-Target opening: [MM/YY] if leased today.
-```
-
-**`exec.acquisition_conditions`** — Split format:
+Format:
 ```
 Conditions:
 - [contractual items for the lease/purchase agreement]
@@ -533,6 +531,16 @@ Conditions:
 Risks to note:
 - [informational flags, NOT recommendations]
 ```
+
+### sources — Document links (5 rows)
+
+| Token | Description | Source |
+|---|---|---|
+| `sources.sir_link` | Link to SIR document in Drive | Drive file link |
+| `sources.inspection_link` | Link to building inspection report | Drive file link |
+| `sources.isp_link` | Link to ISP / Program Fit Analysis | Drive file link |
+| `sources.e_occupancy_link` | Link to E-Occupancy Assessment doc | Created by `save_skill_report` |
+| `sources.school_approval_link` | Link to School Approval Assessment doc | Created by `save_skill_report` |
 
 ---
 

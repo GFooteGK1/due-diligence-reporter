@@ -15,7 +15,7 @@ from mcp.server import FastMCP
 from .classifier import classify_by_keywords, classify_document, match_file_to_site_llm
 from .config import get_settings
 from .google_client import GoogleClient
-from .report_schema import normalize_report_data, normalize_report_data_v2
+from .report_schema import compute_v2_deltas, normalize_report_data, normalize_report_data_v2
 from .utils import (
     build_replace_all_text_requests,
     extract_folder_id_from_url,
@@ -1627,6 +1627,10 @@ async def create_dd_report(
         replacements, unmatched, unfilled = normalizer(
             report_data, site_name=site_name.strip(), report_date=today_str,
         )
+        # V2: compute delta column from MVP/Ideal pairs (server-side math)
+        if version == 2:
+            compute_v2_deltas(replacements)
+
         # Collapse consecutive newlines in scope_of_work to prevent stray numbered
         # paragraphs when the placeholder sits inside a numbered list in the template
         if "q2.scope_of_work" in replacements:
@@ -1644,8 +1648,8 @@ async def create_dd_report(
         if unmatched:
             logger.warning("Unmatched agent keys (no template token): %s", unmatched)
 
-        # Step 2b: Auto-populate M1 Property Acquired subfolder link
-        if "q2.renderings_link" not in replacements:
+        # Step 2b: Auto-populate M1 Property Acquired subfolder link (V1 only)
+        if version == 1 and "q2.renderings_link" not in replacements:
             try:
                 subfolders = gc.list_subfolders(folder_id)
                 m1_folder = next(
@@ -1680,11 +1684,12 @@ async def create_dd_report(
         else:
             logger.warning("No placeholder replacements to apply — report_data may be empty")
 
-        # Step 4: Embed floorplan PNG from ISP shared folder
-        floorplan_inserted = _embed_floorplan_image(
-            gc, doc_id=doc_id, folder_id=folder_id,
-            site_name=site_name,
-        )
+        # Step 4: Embed floorplan PNG from ISP shared folder (V1 only)
+        if version == 1:
+            floorplan_inserted = _embed_floorplan_image(
+                gc, doc_id=doc_id, folder_id=folder_id,
+                site_name=site_name,
+            )
 
         logger.info("DD report created successfully: %s", doc_url)
 
@@ -2127,6 +2132,83 @@ async def generate_marketing_pack(
         return {
             "status": "error",
             "error": "MatterBot request failed",
+            "message": str(e),
+        }
+
+
+@mcp.tool()
+async def save_skill_report(
+    skill_name: str,
+    site_name: str,
+    drive_folder_url: str,
+    content: str,
+) -> dict[str, Any]:
+    """Save a skill assessment as a standalone Google Doc in the site's M1 subfolder.
+
+    Creates a document named "{skill_name} Assessment - {site_name}" in the M1
+    subfolder (or the site root folder if M1 is not found).
+
+    Args:
+        skill_name: Skill name (e.g., "E-Occupancy", "School Approval").
+        site_name: Site name for the document title.
+        drive_folder_url: Google Drive folder URL for the site.
+        content: Full text content of the skill report.
+
+    Returns:
+        Dict with status, doc_url, and doc_id.
+    """
+    logger.info("Tool called: save_skill_report — skill=%s, site=%s", skill_name, site_name)
+
+    if not skill_name or not site_name or not drive_folder_url or not content:
+        return {
+            "status": "error",
+            "error": "Missing parameters",
+            "message": "skill_name, site_name, drive_folder_url, and content are required",
+        }
+
+    folder_id = extract_folder_id_from_url(drive_folder_url)
+    if not folder_id:
+        return {
+            "status": "error",
+            "error": "Invalid Drive folder URL",
+            "message": f"Could not extract folder ID from: {drive_folder_url}",
+        }
+
+    gc = _get_google_client()
+    doc_name = f"{skill_name} Assessment - {site_name}"
+
+    # Try to find M1 subfolder; fall back to site root
+    target_folder_id = folder_id
+    try:
+        subfolders = gc.list_subfolders(folder_id)
+        for sf in subfolders:
+            if sf.get("name", "").startswith("M1"):
+                target_folder_id = sf["id"]
+                logger.info("Found M1 subfolder: %s", sf["name"])
+                break
+        else:
+            logger.warning("M1 subfolder not found for '%s', saving to site root", site_name)
+    except Exception as e:
+        logger.warning("Failed to list subfolders for '%s': %s — saving to site root", site_name, e)
+
+    try:
+        doc = gc.create_document(
+            name=doc_name,
+            folder_id=target_folder_id,
+            text_content=content,
+        )
+        return {
+            "status": "success",
+            "doc_id": doc.get("id", ""),
+            "doc_url": doc.get("webViewLink", ""),
+            "doc_name": doc_name,
+            "message": f"Created '{doc_name}' in Drive",
+        }
+    except Exception as e:
+        logger.error("save_skill_report failed: %s", e)
+        return {
+            "status": "error",
+            "error": "Failed to create document",
             "message": str(e),
         }
 

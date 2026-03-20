@@ -148,6 +148,45 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["doc_id"],
         },
     },
+    {
+        "name": "get_site_comments",
+        "description": "Retrieve Wrike record comments for a site, grouped by suggested report section (q1-q4, appendix, general). Useful for incorporating pre-app meeting notes, vendor updates, and cost overrides.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name_or_id": {"type": "string", "description": "Site name, Wrike record ID, or Wrike permalink URL"},
+            },
+            "required": ["site_name_or_id"],
+        },
+    },
+    {
+        "name": "save_skill_report",
+        "description": "Save a skill assessment (E-Occupancy or School Approval) as a standalone Google Doc in the site's M1 subfolder. Returns doc_url for inclusion in sources.* tokens.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "description": "Skill name, e.g. 'E-Occupancy' or 'School Approval'"},
+                "site_name": {"type": "string", "description": "Site name for the document title"},
+                "drive_folder_url": {"type": "string", "description": "Google Drive folder URL for the site"},
+                "content": {"type": "string", "description": "Full text content of the skill report"},
+            },
+            "required": ["skill_name", "site_name", "drive_folder_url", "content"],
+        },
+    },
+    {
+        "name": "send_dd_report_email",
+        "description": "Send the completed DD report by email to configured recipients plus optional additional recipients (e.g. P1 Assignee).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name": {"type": "string", "description": "Site name for the email subject line"},
+                "report_url": {"type": "string", "description": "URL of the generated DD report Google Doc"},
+                "key_findings": {"type": "string", "description": "Short summary of key findings for the email body"},
+                "additional_recipients": {"type": "string", "default": "", "description": "Comma-separated email addresses to add"},
+            },
+            "required": ["site_name", "report_url", "key_findings"],
+        },
+    },
 ]
 
 
@@ -169,6 +208,9 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
         "get_cost_estimate": srv.get_cost_estimate,
         "create_dd_report": srv.create_dd_report,
         "check_report_completeness": srv.check_report_completeness,
+        "get_site_comments": srv.get_site_comments,
+        "save_skill_report": srv.save_skill_report,
+        "send_dd_report_email": srv.send_dd_report_email,
     }
 
     fn = tool_map.get(tool_name)
@@ -351,8 +393,19 @@ def check_site_readiness_direct(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def run_dd_report_agent(site_title: str, system_prompt: str) -> dict[str, Any]:
+def run_dd_report_agent(
+    site_title: str,
+    system_prompt: str,
+    *,
+    report_version: int = 1,
+) -> dict[str, Any]:
     """Run Claude as a tool-calling agent to generate one DD report.
+
+    Args:
+        site_title: Site name to generate the report for.
+        system_prompt: Full system prompt text.
+        report_version: Force this version on create_dd_report calls (1 or 2).
+            Prevents the agent from accidentally using the wrong template.
 
     Returns a dict with keys: success, doc_id, doc_url, error.
     """
@@ -401,8 +454,12 @@ def run_dd_report_agent(site_title: str, system_prompt: str) -> dict[str, Any]:
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
             logger.info("Executing tool: %s", tool_use.name)
+            tool_input = tool_use.input
+            # Force report version — prevents agent from accidentally using wrong template
+            if tool_use.name == "create_dd_report":
+                tool_input = {**tool_input, "version": report_version}
             try:
-                result = route_tool_call_sync(tool_use.name, tool_use.input)
+                result = route_tool_call_sync(tool_use.name, tool_input)
             except Exception as e:
                 logger.error("Tool %s failed: %s", tool_use.name, e)
                 result = {"status": "error", "message": str(e)}
@@ -467,6 +524,7 @@ def process_site_pipeline(
     settings: Settings,
     p1_email: str | None = None,
     site_address: str | None = None,
+    report_version: int = 1,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -510,7 +568,7 @@ def process_site_pipeline(
 
     # Case 3: All docs present, no report yet — generate
     logger.info("'%s' — all docs present, generating report...", site_title)
-    agent_result = run_dd_report_agent(site_title, system_prompt)
+    agent_result = run_dd_report_agent(site_title, system_prompt, report_version=report_version)
 
     if not agent_result.get("success"):
         err = agent_result.get("error", "unknown error")
