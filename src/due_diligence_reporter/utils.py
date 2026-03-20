@@ -80,17 +80,33 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         return ""
 
 
+def _iter_paragraphs(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Yield all paragraph dicts from a Google Docs content tree.
+
+    Recurses into tables (tableRows → tableCells → content) so that
+    paragraphs inside table cells are included alongside top-level ones.
+    """
+    paragraphs: list[dict[str, Any]] = []
+    for element in elements:
+        if "paragraph" in element:
+            paragraphs.append(element["paragraph"])
+        elif "table" in element:
+            for row in element["table"].get("tableRows", []):
+                for cell in row.get("tableCells", []):
+                    paragraphs.extend(_iter_paragraphs(cell.get("content", [])))
+    return paragraphs
+
+
 def find_text_index_in_doc(doc_body: dict[str, Any], search_text: str) -> int | None:
     """Find the start character index of ``search_text`` in a Google Docs body.
 
     Concatenates all textRun content within each paragraph before searching,
     so URLs or other strings split across multiple consecutive textRun
-    elements are still found.  Returns the absolute start index or ``None``.
+    elements are still found.  Recurses into tables so that text inside
+    table cells is also searchable.  Returns the absolute start index or
+    ``None``.
     """
-    for element in doc_body.get("content", []):
-        paragraph = element.get("paragraph")
-        if not paragraph:
-            continue
+    for paragraph in _iter_paragraphs(doc_body.get("content", [])):
         # Collect all textRun elements with their start indices
         runs: list[tuple[int, str]] = []
         for pe in paragraph.get("elements", []):

@@ -199,3 +199,75 @@ class TestFindTextIndexSplitRuns:
             ],
         ])
         assert find_text_index_in_doc(doc_body, "https://example.com/path") == 7
+
+    def test_finds_text_inside_table_cell(self):
+        """URLs inside table cells are found (V2 one-pager uses tables)."""
+        doc_body = {
+            "content": [
+                {
+                    "table": {
+                        "tableRows": [
+                            {
+                                "tableCells": [
+                                    {
+                                        "content": [
+                                            {
+                                                "paragraph": {
+                                                    "elements": [
+                                                        {
+                                                            "startIndex": 50,
+                                                            "textRun": {
+                                                                "content": "https://drive.google.com/file/abc",
+                                                            },
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        assert find_text_index_in_doc(doc_body, "https://drive.google.com/file/abc") == 50
+
+    def test_finds_text_in_nested_table_with_split_runs(self):
+        """URLs split across runs inside a table cell are still found."""
+        doc_body = {
+            "content": [
+                {
+                    "table": {
+                        "tableRows": [
+                            {
+                                "tableCells": [
+                                    {
+                                        "content": [
+                                            {
+                                                "paragraph": {
+                                                    "elements": [
+                                                        {
+                                                            "startIndex": 100,
+                                                            "textRun": {"content": "https://docs.google."},
+                                                        },
+                                                        {
+                                                            "startIndex": 120,
+                                                            "textRun": {"content": "com/document/d/abc123"},
+                                                        },
+                                                    ]
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        assert find_text_index_in_doc(
+            doc_body, "https://docs.google.com/document/d/abc123"
+        ) == 100
