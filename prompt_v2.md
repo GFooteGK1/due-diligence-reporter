@@ -437,7 +437,23 @@ Rules:
 - No "executive review recommended" or "consider before proceeding" language
 
 ### Step 6 — Generate the V2 report
-Call `create_dd_report(site_name, drive_folder_url, report_data, version=2)` with the assembled data dict. **Always pass `version=2`** to use the V2 template. See "V2 Report Data Schema" section below for exact token keys.
+Call `create_dd_report(site_name, drive_folder_url, report_data, version=2, token_evidence=evidence)` with the assembled data dict. **Always pass `version=2`** to use the V2 template. See "V2 Report Data Schema" section below for exact token keys.
+
+**`token_evidence`** — As you read each source document, build a parallel dict that records the raw excerpt supporting each token value. This goes into the report trace so reviewers can verify every field back to its source. Example:
+
+```python
+evidence = {
+    "exec.c_zoning": "SIR p.2: 'Zoning: C-2 Commercial. Schools permitted by right under conditional use.'",
+    "exec.c_occupancy": "E-Occupancy skill returned score 62, zone YELLOW, tier 'Needs work'",
+    "exec.c_edreg": "School Approval skill: TN requires state approval, not yet obtained",
+    "exec.e_mvp_capacity": "ISP: absolute_min tier = 18 students (4 classrooms × 742–665 sqft)",
+    "exec.e_mvp_cost": "get_cost_estimate returned $850,000 midpoint for 3,066 SF with 4 rooms",
+    "exec.f_mvp_ready": "SIR: permit timeline 10 weeks + construction est. 12 weeks from today = 07/27",
+    "exec.acquisition_conditions": "SIR: traffic study required by City of Franklin; Building Inspection: State Fire Marshal sequential blocker",
+}
+```
+
+Keep evidence short (1-2 sentences) — quote the source, cite the page/section if available. For skill tool outputs, note the key return values. For synthesized fields (`c_answer`, `f_mvp_ready`, `acquisition_conditions`), cite the inputs that drove the conclusion.
 
 ### Step 7 — Verify completeness
 Call `check_report_completeness(doc_id)`. If any `{{token}}` placeholders remain, attempt to fill them. `[Not found — ...]` labels are acceptable and not blocking.

@@ -1583,6 +1583,7 @@ async def create_dd_report(
     drive_folder_url: str,
     report_data: dict[str, Any],
     version: int = 2,
+    token_evidence: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create a completed DD report Google Doc for a site.
 
@@ -1603,6 +1604,9 @@ async def create_dd_report(
         drive_folder_url: Google Drive folder URL for the site (report is saved here).
         report_data: Nested dict with all report sections and field values.
         version: Report version (1 = current template, 2 = V2 template). Defaults to 2.
+        token_evidence: Optional dict mapping token names to the raw excerpt from the
+            source document that supports the token value. Included in the report trace
+            so reviewers can verify each field back to its source.
 
     Returns:
         Dict with the URL of the newly created DD report Google Doc.
@@ -1856,13 +1860,15 @@ async def create_dd_report(
         logger.info("DD report created successfully: %s", doc_url)
 
         # Step 5: Upload report trace JSON to the same Drive folder
-        # V2: build focused token report (20 non-link tokens with document source)
+        # V2: build focused token report (20 non-link tokens with document source + evidence)
+        evidence = token_evidence or {}
         if version == 2:
             token_report = {
                 token: {
                     "value": replacements.get(token, "")[:200],
                     "source": TOKEN_SOURCES_V2.get(token, "Unknown"),
                     "filled": token not in unfilled,
+                    **({"evidence": evidence[token][:500]} if token in evidence else {}),
                 }
                 for token in TEMPLATE_TOKENS_V2
                 if token not in LINK_TOKENS_V2
