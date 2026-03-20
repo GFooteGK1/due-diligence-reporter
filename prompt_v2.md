@@ -548,7 +548,7 @@ Risks to note:
 - [informational flags, NOT recommendations]
 ```
 
-### sources — Document links (5 rows)
+### sources — Document links (6 rows)
 
 | Token | Description | Source |
 |---|---|---|
@@ -557,6 +557,7 @@ Risks to note:
 | `sources.isp_link` | Link to ISP / Program Fit Analysis | Drive file link |
 | `sources.e_occupancy_link` | Link to E-Occupancy Assessment doc | Created by `save_skill_report` |
 | `sources.school_approval_link` | Link to School Approval Assessment doc | Created by `save_skill_report` |
+| `sources.trace_link` | Link to report trace JSON (auto-populated) | Auto-populated by `create_dd_report` |
 
 ---
 

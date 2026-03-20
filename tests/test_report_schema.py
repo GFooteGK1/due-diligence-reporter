@@ -274,9 +274,9 @@ class TestV2SchemaIntegrity:
         assert overlap == set(), f"V2 alias keys that are also template tokens: {overlap}"
 
     def test_v2_token_count(self):
-        """V2 template has exactly 26 tokens — guards accidental additions/removals."""
-        assert len(TEMPLATE_TOKENS_V2) == 26, (
-            f"Expected 26 V2 tokens, got {len(TEMPLATE_TOKENS_V2)}"
+        """V2 template has exactly 27 tokens — guards accidental additions/removals."""
+        assert len(TEMPLATE_TOKENS_V2) == 27, (
+            f"Expected 27 V2 tokens, got {len(TEMPLATE_TOKENS_V2)}"
         )
 
 

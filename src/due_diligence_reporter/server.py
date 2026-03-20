@@ -1896,7 +1896,30 @@ async def create_dd_report(
                 file_bytes=trace_json.encode("utf-8"),
                 mime_type="application/json",
             )
-            logger.info("Uploaded report trace: %s", trace_file.get("webViewLink"))
+            trace_url = trace_file.get("webViewLink", "")
+            logger.info("Uploaded report trace: %s", trace_url)
+
+            # Fill {{sources.trace_link}} with display label and hyperlink it
+            if trace_url and version == 2:
+                trace_label = LINK_DISPLAY_LABELS_V2.get("sources.trace_link", trace_url)
+                gc.batch_update_document(doc_id, build_replace_all_text_requests(
+                    {"sources.trace_link": trace_label},
+                ))
+                doc_struct = gc.get_document(doc_id)
+                doc_body = doc_struct.get("body", {})
+                start_idx = find_text_index_in_doc(doc_body, trace_label)
+                if start_idx is not None:
+                    gc.batch_update_document(doc_id, [{
+                        "updateTextStyle": {
+                            "range": {
+                                "startIndex": start_idx,
+                                "endIndex": start_idx + len(trace_label),
+                            },
+                            "textStyle": {"link": {"url": trace_url}},
+                            "fields": "link",
+                        }
+                    }])
+                    logger.info("Linked trace report in doc: %s", trace_label)
         except Exception as e:
             logger.warning("Failed to upload report trace (report still valid): %s", e)
 
