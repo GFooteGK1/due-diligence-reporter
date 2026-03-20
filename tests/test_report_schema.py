@@ -301,7 +301,7 @@ class TestV2Normalization:
             },
             "meta": {"site_name": "Alpha Test"},
         }
-        replacements, unmatched, unfilled = normalize_report_data_v2(
+        replacements, unmatched, unfilled, sources = normalize_report_data_v2(
             report_data, site_name="Alpha Test", report_date="03/19/2026",
         )
         assert replacements["exec.c_answer"] == "YES"
@@ -324,7 +324,7 @@ class TestV2Normalization:
                 "isp_link": "https://example.com/isp",
             },
         }
-        replacements, _, _ = normalize_report_data_v2(
+        replacements, _, _, _ = normalize_report_data_v2(
             report_data, site_name="Test", report_date="01/01/2026",
         )
         assert replacements.get("sources.sir_link") == "https://example.com/sir"
@@ -337,7 +337,7 @@ class TestV2Normalization:
             "sources": {"sir_link": "CANONICAL"},
             "appendix": {"sir_link": "ALIAS"},
         }
-        replacements, _, _ = normalize_report_data_v2(
+        replacements, _, _, _ = normalize_report_data_v2(
             report_data, site_name="Test", report_date="01/01/2026",
         )
         assert replacements["sources.sir_link"] == "CANONICAL"
@@ -348,7 +348,7 @@ class TestV2Normalization:
             "q1": {"zoning_designation": "C-2"},
             "q3": {"structural_low": "24,000"},
         }
-        _, unmatched, _ = normalize_report_data_v2(
+        _, unmatched, _, _ = normalize_report_data_v2(
             report_data, site_name="Test", report_date="01/01/2026",
         )
         assert "q1.zoning_designation" in unmatched
@@ -356,7 +356,7 @@ class TestV2Normalization:
 
     def test_v2_unfilled_tokens(self):
         """Empty data → all V2 tokens minus defaults are unfilled."""
-        _, _, unfilled = normalize_report_data_v2(
+        _, _, unfilled, _ = normalize_report_data_v2(
             {}, site_name="Test", report_date="01/01/2026",
         )
         # meta.site_name and meta.report_date are auto-injected
@@ -375,7 +375,7 @@ class TestV2Normalization:
 
     def test_v2_meta_defaults(self):
         """site_name and report_date are auto-injected into V2 replacements."""
-        replacements, _, _ = normalize_report_data_v2(
+        replacements, _, _, _ = normalize_report_data_v2(
             {}, site_name="Alpha Metro", report_date="03/19/2026",
         )
         assert replacements["meta.site_name"] == "Alpha Metro"
@@ -390,7 +390,7 @@ class TestV2Normalization:
                 "c_occupancy": "Has E-Occupancy",
             },
         }
-        replacements, _, _ = normalize_report_data_v2(
+        replacements, _, _, _ = normalize_report_data_v2(
             report_data, site_name="Test", report_date="01/01/2026",
         )
         assert replacements["exec.c_zoning"] == "Permitted by right"
@@ -402,7 +402,7 @@ class TestV2Normalization:
         report_data = {
             "exec": {"f_ready_mm_yy": "09/27"},
         }
-        replacements, _, _ = normalize_report_data_v2(
+        replacements, _, _, _ = normalize_report_data_v2(
             report_data, site_name="Test", report_date="01/01/2026",
         )
         assert replacements.get("exec.f_mvp_ready") == "09/27"
@@ -412,10 +412,38 @@ class TestV2Normalization:
         report_data = {
             "exec": {"e_ideal_capcity": "54"},
         }
-        replacements, _, _ = normalize_report_data_v2(
+        replacements, _, _, _ = normalize_report_data_v2(
             report_data, site_name="Test", report_date="01/01/2026",
         )
         assert replacements.get("exec.e_ideal_capacity") == "54"
+
+    def test_v2_token_sources(self):
+        """token_sources tracks where each token value came from."""
+        report_data = {
+            "exec": {
+                "c_answer": "YES",
+                "c_zoning": "Permitted",
+                "f_ready_mm_yy": "09/27",  # alias → exec.f_mvp_ready
+            },
+            "appendix": {
+                "sir_link": "https://example.com/sir",  # alias → sources.sir_link
+            },
+        }
+        _, _, _, sources = normalize_report_data_v2(
+            report_data, site_name="Test Site", report_date="03/20/2026",
+        )
+        # Agent direct
+        assert sources["exec.c_answer"] == "agent"
+        assert sources["exec.c_zoning"] == "agent"
+        # Defaults
+        assert sources["meta.site_name"] == "default"
+        assert sources["meta.report_date"] == "default"
+        # Aliases
+        assert sources["exec.f_mvp_ready"] == "alias:exec.f_ready_mm_yy"
+        assert sources["sources.sir_link"] == "alias:appendix.sir_link"
+        # Unfilled
+        assert sources["exec.e_mvp_capacity"] == "unfilled"
+        assert sources["exec.delta_capacity"] == "unfilled"
 
 
 class TestV2DeltaComputation:

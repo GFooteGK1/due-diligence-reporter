@@ -405,23 +405,43 @@ def normalize_report_data_v2(
     report_data: dict[str, Any],
     site_name: str,
     report_date: str,
-) -> tuple[dict[str, str], list[str], list[str]]:
+) -> tuple[dict[str, str], list[str], list[str], dict[str, str]]:
     """Normalize agent output into V2 template-ready replacements.
 
     Same logic as :func:`normalize_report_data` but uses the V2 token set
     and V2 alias map (executive one-pager format).
+
+    Returns:
+        ``(replacements, unmatched_keys, unfilled_tokens, token_sources)``
+
+        - *token_sources* — ``{token: source}`` for every V2 template token.
+          Source values: ``"agent"``, ``"alias:{original_key}"``,
+          ``"default"``, or ``"unfilled"``.  Deltas are marked ``"computed"``
+          by the caller after :func:`compute_v2_deltas`.
     """
     # 1. Flatten
     flat = flatten_report_data_for_replacement(report_data)
+    token_sources: dict[str, str] = {}
 
-    # 2. Inject defaults
-    flat.setdefault("meta.site_name", site_name.strip())
-    flat.setdefault("meta.report_date", report_date)
+    # Track which V2 tokens the agent provided directly
+    for key in flat:
+        if key in TEMPLATE_TOKEN_V2_SET:
+            token_sources[key] = "agent"
+
+    # 2. Inject defaults (only if agent didn't provide them)
+    if "meta.site_name" not in flat:
+        flat["meta.site_name"] = site_name.strip()
+        token_sources["meta.site_name"] = "default"
+    if "meta.report_date" not in flat:
+        flat["meta.report_date"] = report_date
+        token_sources["meta.report_date"] = "default"
 
     # 3. Apply V2 aliases
     for alias, canonical in AGENT_KEY_ALIASES_V2.items():
         if alias in flat and canonical not in flat:
             flat[canonical] = flat[alias]
+            if canonical in TEMPLATE_TOKEN_V2_SET:
+                token_sources[canonical] = f"alias:{alias}"
 
     # 4. Filter → only V2 template tokens
     replacements: dict[str, str] = {}
@@ -435,6 +455,10 @@ def normalize_report_data_v2(
 
     unfilled_tokens = [t for t in TEMPLATE_TOKENS_V2 if t not in replacements]
 
+    # Mark unfilled tokens in sources
+    for token in unfilled_tokens:
+        token_sources[token] = "unfilled"
+
     logger.info(
         "normalize_report_data_v2: %d replacements, %d unmatched, %d unfilled",
         len(replacements),
@@ -446,7 +470,7 @@ def normalize_report_data_v2(
     if unfilled_tokens:
         logger.debug("Unfilled V2 tokens: %s", sorted(unfilled_tokens))
 
-    return replacements, sorted(unmatched_keys), sorted(unfilled_tokens)
+    return replacements, sorted(unmatched_keys), sorted(unfilled_tokens), token_sources
 
 
 # ---------------------------------------------------------------------------

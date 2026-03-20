@@ -1684,13 +1684,20 @@ async def create_dd_report(
         logger.info("Copied template to new document: %s (id=%s)", doc_name, doc_id)
 
         # Step 2: Normalize report_data → template-aligned replacements
-        normalizer = normalize_report_data_v2 if version == 2 else normalize_report_data
-        replacements, unmatched, unfilled = normalizer(
-            report_data, site_name=site_name.strip(), report_date=today_str,
-        )
-        # V2: compute delta column from MVP/Ideal pairs (server-side math)
+        token_sources: dict[str, str] = {}
         if version == 2:
+            replacements, unmatched, unfilled, token_sources = normalize_report_data_v2(
+                report_data, site_name=site_name.strip(), report_date=today_str,
+            )
             compute_v2_deltas(replacements)
+            # Mark deltas that were computed (not agent-filled)
+            for delta_token in ("exec.delta_capacity", "exec.delta_cost", "exec.delta_ready"):
+                if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
+                    token_sources[delta_token] = "computed"
+        else:
+            replacements, unmatched, unfilled = normalize_report_data(
+                report_data, site_name=site_name.strip(), report_date=today_str,
+            )
 
         # Collapse consecutive newlines in scope_of_work to prevent stray numbered
         # paragraphs when the placeholder sits inside a numbered list in the template
@@ -1848,13 +1855,26 @@ async def create_dd_report(
         logger.info("DD report created successfully: %s", doc_url)
 
         # Step 5: Upload report trace JSON to the same Drive folder
+        # V2: build focused token report (20 non-link tokens with source)
+        if version == 2 and token_sources:
+            token_report = {
+                token: {
+                    "value": replacements.get(token, "")[:200],
+                    "source": token_sources.get(token, "unfilled"),
+                }
+                for token in TEMPLATE_TOKENS_V2
+                if token not in LINK_TOKENS_V2
+            }
+        else:
+            token_report = None
+
         trace_data = {
             "site_name": site_name.strip(),
             "version": version,
             "date": today_str,
             "report_doc_id": doc_id,
             "report_doc_url": doc_url,
-            "replacements": {k: v[:200] for k, v in replacements.items()},
+            "token_report": token_report,
             "unmatched_keys": unmatched,
             "unfilled_tokens": unfilled,
             "hyperlinks": hyperlink_trace,
