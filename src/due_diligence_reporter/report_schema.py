@@ -210,8 +210,8 @@ TOKEN_SOURCES_V2: dict[str, str] = {
     # ── exec: cost / capacity / timeline ───────────────────────────────────
     "exec.e_mvp_capacity":          "ISP",
     "exec.e_ideal_capacity":        "ISP",
-    "exec.e_mvp_cost":              "Building Inspection",
-    "exec.e_ideal_cost":            "Building Inspection",
+    "exec.e_mvp_cost":              "ISP",
+    "exec.e_ideal_cost":            "ISP",
     "exec.f_mvp_ready":             "Agent",
     "exec.f_ideal_ready":           "Agent",
     # ── exec: deltas (server-computed) ─────────────────────────────────────
