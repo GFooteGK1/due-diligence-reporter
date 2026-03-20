@@ -369,10 +369,12 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 - `apply_school_approval_skill(state)` from the site address
 - `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list (if ISP was found)
 
-**After each skill call, publish the result as a standalone doc:**
-1. Call `save_skill_report(skill_name="E-Occupancy", site_name=..., drive_folder_url=..., content=<message field from apply_e_occupancy_skill result>)`
-2. Call `save_skill_report(skill_name="School Approval", site_name=..., drive_folder_url=..., content=<message field from apply_school_approval_skill result>)`
+**After each skill call, publish the full result as a standalone doc:**
+1. Call `save_skill_report(skill_name="E-Occupancy", site_name=..., drive_folder_url=..., skill_data=<full result dict from apply_e_occupancy_skill>)`
+2. Call `save_skill_report(skill_name="School Approval", site_name=..., drive_folder_url=..., skill_data=<full result dict from apply_school_approval_skill>)`
 3. Include the returned `doc_url` values in `report_data` as `sources.e_occupancy_link` and `sources.school_approval_link`
+
+Pass the **entire** skill result dict as `skill_data` — the tool formats all fields (scores, deductions, steps, report_data_fields) into a readable document automatically.
 
 ### Executive Summary Format
 

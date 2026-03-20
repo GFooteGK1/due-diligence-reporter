@@ -207,3 +207,44 @@ def build_replace_all_text_requests(
         )
 
     return requests_list
+
+
+def build_hyperlink_requests(
+    doc_body: dict[str, Any],
+    replacements: dict[str, str],
+    link_tokens: frozenset[str],
+) -> list[dict[str, Any]]:
+    """Build ``updateTextStyle`` requests to hyperlink URL values in the doc.
+
+    For each token in *link_tokens* whose replacement value starts with
+    ``http``, finds the text in *doc_body* and returns an ``updateTextStyle``
+    request that sets ``link.url`` on that character range.
+
+    Must be called **after** ``replaceAllText`` has been applied — pass a
+    fresh ``doc_body`` from ``get_document()``.
+    """
+    requests_list: list[dict[str, Any]] = []
+
+    for token in link_tokens:
+        url = replacements.get(token, "")
+        if not url.startswith("http"):
+            continue
+
+        start_idx = find_text_index_in_doc(doc_body, url)
+        if start_idx is None:
+            continue
+
+        requests_list.append({
+            "updateTextStyle": {
+                "range": {
+                    "startIndex": start_idx,
+                    "endIndex": start_idx + len(url),
+                },
+                "textStyle": {
+                    "link": {"url": url},
+                },
+                "fields": "link",
+            }
+        })
+
+    return requests_list

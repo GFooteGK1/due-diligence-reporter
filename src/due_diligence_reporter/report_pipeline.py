@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import anthropic
@@ -161,16 +163,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "save_skill_report",
-        "description": "Save a skill assessment (E-Occupancy or School Approval) as a standalone Google Doc in the site's M1 subfolder. Returns doc_url for inclusion in sources.* tokens.",
+        "description": "Save a skill assessment (E-Occupancy or School Approval) as a standalone Google Doc in the site's M1 subfolder. Pass the FULL result dict from apply_e_occupancy_skill or apply_school_approval_skill as skill_data — the tool formats it into a readable document. Returns doc_url for inclusion in sources.* tokens.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "skill_name": {"type": "string", "description": "Skill name, e.g. 'E-Occupancy' or 'School Approval'"},
+                "skill_name": {"type": "string", "description": "Skill name: 'E-Occupancy' or 'School Approval'"},
                 "site_name": {"type": "string", "description": "Site name for the document title"},
                 "drive_folder_url": {"type": "string", "description": "Google Drive folder URL for the site"},
-                "content": {"type": "string", "description": "Full text content of the skill report"},
+                "skill_data": {"type": "object", "description": "Full result dict from the skill tool (pass the entire response)"},
             },
-            "required": ["skill_name", "site_name", "drive_folder_url", "content"],
+            "required": ["skill_name", "site_name", "drive_folder_url", "skill_data"],
         },
     },
     {
@@ -415,6 +417,14 @@ def run_dd_report_agent(
 
     client = anthropic.Anthropic(api_key=anthropic_api_key)
 
+    # Initialize provenance trace
+    trace = ReportTrace(
+        site_name=site_title,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        prompt_version=report_version,
+    )
+    run_start = time.monotonic()
+
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": f"Generate a DD Report for: {site_title}"},
     ]
@@ -458,11 +468,27 @@ def run_dd_report_agent(
             # Force report version — prevents agent from accidentally using wrong template
             if tool_use.name == "create_dd_report":
                 tool_input = {**tool_input, "version": report_version}
+
+            t0 = time.monotonic()
+            tool_error: str | None = None
             try:
                 result = route_tool_call_sync(tool_use.name, tool_input)
             except Exception as e:
                 logger.error("Tool %s failed: %s", tool_use.name, e)
                 result = {"status": "error", "message": str(e)}
+                tool_error = str(e)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+            # Record in provenance trace
+            trace.add_event(TraceEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="tool_call",
+                tool_name=tool_use.name,
+                input_summary=_sanitize_input(tool_input),
+                output_summary=_summarize_tool_output(result),
+                duration_ms=elapsed_ms,
+                error=tool_error,
+            ))
 
             # Capture doc_id from create_dd_report
             if tool_use.name == "create_dd_report" and isinstance(result, dict):
@@ -471,6 +497,9 @@ def run_dd_report_agent(
                     doc_id = doc_data["id"]
                     doc_url = doc_data.get("url")
                     logger.info("Created DD report: %s", doc_url)
+                    trace.doc_id = doc_id
+                    trace.tokens_filled = result.get("replacements_applied", 0)
+                    trace.tokens_unfilled = result.get("unfilled_template_tokens", 0)
 
             tool_results.append({
                 "type": "tool_result",
@@ -485,9 +514,14 @@ def run_dd_report_agent(
             logger.info("Report created, stopping agent loop after %d iterations", iteration + 1)
             break
 
+    # Finalize trace
+    trace.ended_at = datetime.now(timezone.utc).isoformat()
+    trace.total_duration_ms = int((time.monotonic() - run_start) * 1000)
+    trace.final_status = "success" if doc_id else "no_report"
+
     if doc_id:
-        return {"success": True, "doc_id": doc_id, "doc_url": doc_url}
-    return {"success": False, "error": "Agent completed without creating a report"}
+        return {"success": True, "doc_id": doc_id, "doc_url": doc_url, "trace": trace}
+    return {"success": False, "error": "Agent completed without creating a report", "trace": trace}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -507,6 +541,113 @@ class PipelineResult:
     unresolved_tokens: list[str] = field(default_factory=list)
     pending_count: int = 0
     error: str | None = None
+    trace_url: str | None = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Report generation trace — provenance log
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class TraceEvent:
+    """A single event in the report generation trace."""
+
+    timestamp: str
+    event_type: str  # "tool_call" | "run_start" | "run_end"
+    tool_name: str = ""
+    input_summary: dict[str, Any] = field(default_factory=dict)
+    output_summary: dict[str, Any] = field(default_factory=dict)
+    duration_ms: int = 0
+    error: str | None = None
+
+
+@dataclass
+class ReportTrace:
+    """Accumulated trace of a report generation run."""
+
+    site_name: str
+    started_at: str
+    prompt_version: int = 1
+    events: list[TraceEvent] = field(default_factory=list)
+    ended_at: str = ""
+    total_duration_ms: int = 0
+    final_status: str = ""
+    doc_id: str | None = None
+    tokens_filled: int = 0
+    tokens_unfilled: int = 0
+
+    def add_event(self, event: TraceEvent) -> None:
+        self.events.append(event)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
+        return {
+            "site_name": self.site_name,
+            "started_at": self.started_at,
+            "prompt_version": self.prompt_version,
+            "ended_at": self.ended_at,
+            "total_duration_ms": self.total_duration_ms,
+            "final_status": self.final_status,
+            "doc_id": self.doc_id,
+            "tokens_filled": self.tokens_filled,
+            "tokens_unfilled": self.tokens_unfilled,
+            "event_count": len(self.events),
+            "events": [
+                {
+                    "timestamp": e.timestamp,
+                    "event_type": e.event_type,
+                    "tool_name": e.tool_name,
+                    "input_summary": e.input_summary,
+                    "output_summary": e.output_summary,
+                    "duration_ms": e.duration_ms,
+                    "error": e.error,
+                }
+                for e in self.events
+            ],
+        }
+
+
+def _sanitize_input(tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Remove or truncate large input values for trace logging."""
+    sanitized: dict[str, Any] = {}
+    for k, v in tool_input.items():
+        if k == "report_data" and isinstance(v, dict):
+            sanitized[k] = f"<{len(v)} top-level keys>"
+        elif k == "content" and isinstance(v, str) and len(v) > 200:
+            sanitized[k] = v[:200] + f"... ({len(v)} chars)"
+        elif isinstance(v, str) and len(v) > 500:
+            sanitized[k] = v[:500] + "..."
+        else:
+            sanitized[k] = v
+    return sanitized
+
+
+def _summarize_tool_output(result: Any) -> dict[str, Any]:
+    """Create a compact summary of a tool result for the trace."""
+    if not isinstance(result, dict):
+        text = str(result)
+        return {"text": text[:500]}
+
+    summary: dict[str, Any] = {"status": result.get("status", "unknown")}
+
+    if "document" in result:
+        summary["document"] = result["document"]
+    if "files" in result and isinstance(result["files"], list):
+        summary["file_count"] = len(result["files"])
+    if "content" in result and isinstance(result["content"], str):
+        summary["content_length"] = len(result["content"])
+    if "message" in result:
+        msg = str(result["message"])
+        summary["message"] = msg[:300] if len(msg) > 300 else msg
+    if "error" in result:
+        summary["error"] = str(result["error"])[:200]
+    if "replacements_applied" in result:
+        summary["replacements_applied"] = result["replacements_applied"]
+    if "unfilled_template_tokens" in result:
+        summary["unfilled_template_tokens"] = result["unfilled_template_tokens"]
+
+    return summary
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -580,6 +721,27 @@ def process_site_pipeline(
     doc_id = agent_result["doc_id"]
     doc_url = agent_result.get("doc_url", "")
 
+    # 3b. Save provenance trace to Drive
+    trace: ReportTrace | None = agent_result.get("trace")
+    trace_url: str | None = None
+    if trace:
+        folder_id = extract_folder_id_from_url(drive_folder_url)
+        if folder_id:
+            trace_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            trace_name = f"{site_title} DD Report Trace - {trace_date}.json"
+            try:
+                trace_json = json.dumps(trace.to_dict(), indent=2)
+                trace_file = gc.upload_file_to_folder(
+                    folder_id=folder_id,
+                    file_name=trace_name,
+                    file_bytes=trace_json.encode("utf-8"),
+                    mime_type="application/json",
+                )
+                trace_url = trace_file.get("webViewLink")
+                logger.info("Saved report trace: %s", trace_name)
+            except Exception as e:
+                logger.warning("Failed to save report trace: %s", e)
+
     # 4. Check completeness
     completeness = asyncio.run(srv.check_report_completeness(doc_id))
 
@@ -631,6 +793,7 @@ def process_site_pipeline(
         doc_id=doc_id,
         doc_url=doc_url,
         pending_count=completeness.get("pending_section_count", 0),
+        trace_url=trace_url,
     )
 
 
@@ -678,6 +841,8 @@ def post_pipeline_result(
             f"DD Report CREATED -- {result.site_title}\n"
             f"Report: {result.doc_url or '(no URL)'}"
         )
+        if result.trace_url:
+            msg += f"\nTrace: {result.trace_url}"
         if result.pending_count:
             msg += f"\nPending fields: {result.pending_count}"
 

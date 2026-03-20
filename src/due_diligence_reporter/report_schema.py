@@ -190,6 +190,34 @@ TEMPLATE_TOKENS_V2: list[str] = [
 
 TEMPLATE_TOKEN_V2_SET: frozenset[str] = frozenset(TEMPLATE_TOKENS_V2)
 
+# ---------------------------------------------------------------------------
+# Link tokens — values that should render as clickable hyperlinks in the doc
+# ---------------------------------------------------------------------------
+
+LINK_TOKENS_V1: frozenset[str] = frozenset({
+    "appendix.sir_link",
+    "appendix.inspection_link",
+    "appendix.floorplan_viability_link",
+    "appendix.phase1_esa_link",
+    "appendix.lidar_link",
+    "appendix.as_built_link",
+    "appendix.pre_app_notes_link",
+    "appendix.school_registration_link",
+    "appendix.permit_history_link",
+    "appendix.other_reports_links",
+    "q2.renderings_link",
+    "meta.drive_folder_url",
+})
+
+LINK_TOKENS_V2: frozenset[str] = frozenset({
+    "sources.sir_link",
+    "sources.inspection_link",
+    "sources.isp_link",
+    "sources.e_occupancy_link",
+    "sources.school_approval_link",
+    "meta.drive_folder_url",
+})
+
 # V2 aliases — map V1-style agent keys to V2 canonical tokens
 AGENT_KEY_ALIASES_V2: dict[str, str] = {
     # ── top-level / site.* → meta.* ──────────────────────────────────────

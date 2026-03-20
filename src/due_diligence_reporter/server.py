@@ -15,8 +15,15 @@ from mcp.server import FastMCP
 from .classifier import classify_by_keywords, classify_document, match_file_to_site_llm
 from .config import get_settings
 from .google_client import GoogleClient
-from .report_schema import compute_v2_deltas, normalize_report_data, normalize_report_data_v2
+from .report_schema import (
+    LINK_TOKENS_V1,
+    LINK_TOKENS_V2,
+    compute_v2_deltas,
+    normalize_report_data,
+    normalize_report_data_v2,
+)
 from .utils import (
+    build_hyperlink_requests,
     build_replace_all_text_requests,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
@@ -1684,6 +1691,25 @@ async def create_dd_report(
         else:
             logger.warning("No placeholder replacements to apply — report_data may be empty")
 
+        # Step 3b: Hyperlink URL tokens (convert plain-text URLs to clickable links)
+        link_token_set = LINK_TOKENS_V2 if version == 2 else LINK_TOKENS_V1
+        link_candidates = {
+            k: v for k, v in text_replacements.items()
+            if k in link_token_set and v.startswith("http")
+        }
+        if link_candidates:
+            doc_struct = gc.get_document(doc_id)
+            doc_body = doc_struct.get("body", {})
+            hyperlink_requests = build_hyperlink_requests(
+                doc_body, link_candidates, link_token_set,
+            )
+            if hyperlink_requests:
+                gc.batch_update_document(doc_id, hyperlink_requests)
+                logger.info(
+                    "Applied %d hyperlinks to document %s",
+                    len(hyperlink_requests), doc_id,
+                )
+
         # Step 4: Embed floorplan PNG from ISP shared folder (V1 only)
         if version == 1:
             floorplan_inserted = _embed_floorplan_image(
@@ -2141,29 +2167,31 @@ async def save_skill_report(
     skill_name: str,
     site_name: str,
     drive_folder_url: str,
-    content: str,
+    skill_data: dict[str, Any],
 ) -> dict[str, Any]:
     """Save a skill assessment as a standalone Google Doc in the site's M1 subfolder.
 
-    Creates a document named "{skill_name} Assessment - {site_name}" in the M1
-    subfolder (or the site root folder if M1 is not found).
+    Creates a document named "{skill_name} Assessment - {site_name}" containing
+    the full structured skill output. The tool formats the data into a readable
+    document — pass the complete result dict from the skill tool.
 
     Args:
         skill_name: Skill name (e.g., "E-Occupancy", "School Approval").
         site_name: Site name for the document title.
         drive_folder_url: Google Drive folder URL for the site.
-        content: Full text content of the skill report.
+        skill_data: Full result dict from apply_e_occupancy_skill or
+            apply_school_approval_skill.
 
     Returns:
         Dict with status, doc_url, and doc_id.
     """
     logger.info("Tool called: save_skill_report — skill=%s, site=%s", skill_name, site_name)
 
-    if not skill_name or not site_name or not drive_folder_url or not content:
+    if not skill_name or not site_name or not drive_folder_url or not skill_data:
         return {
             "status": "error",
             "error": "Missing parameters",
-            "message": "skill_name, site_name, drive_folder_url, and content are required",
+            "message": "skill_name, site_name, drive_folder_url, and skill_data are required",
         }
 
     folder_id = extract_folder_id_from_url(drive_folder_url)
@@ -2175,14 +2203,19 @@ async def save_skill_report(
         }
 
     gc = _get_google_client()
+    today_str = datetime.now().strftime("%m/%d/%Y")
     doc_name = f"{skill_name} Assessment - {site_name}"
+
+    # Format the skill data into a readable document
+    content = _format_skill_document(skill_name, site_name, today_str, skill_data)
 
     # Try to find M1 subfolder; fall back to site root
     target_folder_id = folder_id
     try:
         subfolders = gc.list_subfolders(folder_id)
         for sf in subfolders:
-            if sf.get("name", "").startswith("M1"):
+            sf_name = sf.get("name", "").lower()
+            if sf_name.startswith("m1"):
                 target_folder_id = sf["id"]
                 logger.info("Found M1 subfolder: %s", sf["name"])
                 break
@@ -2211,6 +2244,118 @@ async def save_skill_report(
             "error": "Failed to create document",
             "message": str(e),
         }
+
+
+def _format_skill_document(
+    skill_name: str,
+    site_name: str,
+    date: str,
+    data: dict[str, Any],
+) -> str:
+    """Format a skill result dict into readable document text."""
+    lines: list[str] = [
+        f"{skill_name} Assessment",
+        f"Site: {site_name}",
+        f"Date: {date}",
+        "",
+    ]
+
+    if skill_name == "E-Occupancy":
+        lines.extend([
+            "Scoring",
+            f"  Final Score: {data.get('final_score', 'N/A')}/100",
+            f"  Zone: {data.get('zone', 'N/A')}",
+            f"  Conversion Tier: {data.get('tier', 'N/A')}",
+            f"  Estimated Timeline: {data.get('timeline', 'N/A')}",
+            f"  Confidence Level: {data.get('confidence', 'N/A')}",
+            "",
+            "Building Type Analysis",
+            f"  Matched Building Type: {data.get('matched_building_type', 'N/A')}",
+            f"  Base Score (before deductions): {data.get('base_score', 'N/A')}",
+            "",
+        ])
+        deductions = data.get("deductions_applied", [])
+        if deductions:
+            lines.append("Tenant Deductions Applied")
+            for d in deductions:
+                lines.append(f"  - {d}")
+            lines.append("")
+        else:
+            lines.extend(["Tenant Deductions Applied", "  None", ""])
+
+        rdf = data.get("report_data_fields", {})
+        if rdf:
+            lines.append("Report Fields")
+            e_occ_labels = {
+                "q2.e_occupancy_score": "E-Occupancy Score",
+                "q2.e_occupancy_zone": "E-Occupancy Zone",
+                "q2.e_occupancy_tier": "E-Occupancy Tier",
+                "q2.e_occupancy_timeline": "E-Occupancy Timeline",
+                "q2.e_occupancy_confidence": "E-Occupancy Confidence",
+            }
+            for k, v in sorted(rdf.items()):
+                label = e_occ_labels.get(k, k)
+                lines.append(f"  {label}: {v}")
+            lines.append("")
+
+    elif skill_name == "School Approval":
+        lines.extend([
+            "State Requirements",
+            f"  State: {data.get('state', 'N/A')}",
+            f"  Score: {data.get('score', 'N/A')}/100",
+            f"  Zone: {data.get('zone', 'N/A')}",
+            f"  Approval Type: {_humanize_approval_type(data.get('approval_type', 'N/A'))}",
+            f"  Gating Requirement: {'Yes' if data.get('gating') else 'No'}",
+            f"  Timeline: {data.get('timeline_days', 'N/A')} days",
+            f"  Confidence Level: {data.get('confidence', 'N/A')}",
+            "",
+            "Steps to Allow Operation",
+            f"  {data.get('steps_to_allow_operation', 'N/A')}",
+            "",
+            "Summary",
+            f"  {data.get('state_school_registration_summary', 'N/A')}",
+            "",
+        ])
+
+        rdf = data.get("report_data_fields", {})
+        if rdf:
+            lines.append("Report Fields")
+            school_labels = {
+                "q1.state_school_registration": "State School Registration",
+                "q1.school_approval_type": "Approval Type",
+                "q1.school_approval_gating": "Gating Requirement",
+                "q1.school_approval_timeline_days": "Approval Timeline (days)",
+                "q1.steps_to_allow_operation": "Steps to Allow Operation",
+            }
+            for k, v in sorted(rdf.items()):
+                label = school_labels.get(k, k)
+                lines.append(f"  {label}: {v}")
+            lines.append("")
+
+    else:
+        # Generic fallback — humanize keys
+        lines.append("Data")
+        for k, v in sorted(data.items()):
+            label = k.replace("_", " ").replace(".", " — ").title()
+            if isinstance(v, dict):
+                lines.append(f"  {label}:")
+                for rk, rv in sorted(v.items()):
+                    sub_label = rk.replace("_", " ").replace(".", " — ").title()
+                    lines.append(f"    {sub_label}: {rv}")
+            elif isinstance(v, list):
+                lines.append(f"  {label}:")
+                for item in v:
+                    lines.append(f"    - {item}")
+            else:
+                lines.append(f"  {label}: {v}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _humanize_approval_type(approval_type: str) -> str:
+    """Convert UPPER_SNAKE_CASE approval type to readable text."""
+    return approval_type.replace("_", " ").title()
 
 
 @mcp.tool()

@@ -7,6 +7,8 @@ import pytest
 from due_diligence_reporter.report_schema import (
     AGENT_KEY_ALIASES,
     AGENT_KEY_ALIASES_V2,
+    LINK_TOKENS_V1,
+    LINK_TOKENS_V2,
     TEMPLATE_TOKEN_SET,
     TEMPLATE_TOKEN_V2_SET,
     TEMPLATE_TOKENS,
@@ -511,6 +513,20 @@ class TestV2DeltaComputation:
         compute_v2_deltas(replacements)
 
         assert replacements["exec.delta_ready"] == "+3 mo"
+
+
+class TestLinkTokenSets:
+    """Verify link token sets are valid subsets of their template token sets."""
+
+    def test_v1_link_tokens_are_valid(self):
+        """Every V1 link token must be in TEMPLATE_TOKEN_SET."""
+        bad = LINK_TOKENS_V1 - TEMPLATE_TOKEN_SET
+        assert bad == set(), f"V1 link tokens not in template: {bad}"
+
+    def test_v2_link_tokens_are_valid(self):
+        """Every V2 link token must be in TEMPLATE_TOKEN_V2_SET."""
+        bad = LINK_TOKENS_V2 - TEMPLATE_TOKEN_V2_SET
+        assert bad == set(), f"V2 link tokens not in template: {bad}"
 
 
 class TestV2PipelineToolDefinitions:
