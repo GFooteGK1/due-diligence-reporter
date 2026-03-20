@@ -364,17 +364,14 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 
 **Do not skip reading a document that was found.** Every found document must be read and its data extracted.
 
-### Step 5 — Apply skill tools and publish assessments
-- `apply_e_occupancy_skill(...)` with data from the building inspection
-- `apply_school_approval_skill(state)` from the site address
+### Step 5 — Apply skill tools (auto-publishes assessments to Drive)
+- `apply_e_occupancy_skill(..., site_name=<site_name>, drive_folder_url=<drive_folder_url>)` with data from the building inspection
+- `apply_school_approval_skill(state, site_name=<site_name>, drive_folder_url=<drive_folder_url>)` from the site address
 - `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list (if ISP was found)
 
-**After each skill call, publish the full result as a standalone doc:**
-1. Call `save_skill_report(skill_name="E-Occupancy", site_name=..., drive_folder_url=..., skill_data=<full result dict from apply_e_occupancy_skill>)`
-2. Call `save_skill_report(skill_name="School Approval", site_name=..., drive_folder_url=..., skill_data=<full result dict from apply_school_approval_skill>)`
-3. Include the returned `doc_url` values in `report_data` as `sources.e_occupancy_link` and `sources.school_approval_link`
-
-Pass the **entire** skill result dict as `skill_data` — the tool formats all fields (scores, deductions, steps, report_data_fields) into a readable document automatically.
+**Always pass `site_name` and `drive_folder_url`** to both skill tools. This auto-publishes the full assessment as a Google Doc in the site's M1 subfolder. The returned `doc_url` should be included in `report_data` as:
+- `sources.e_occupancy_link` ← `doc_url` from `apply_e_occupancy_skill`
+- `sources.school_approval_link` ← `doc_url` from `apply_school_approval_skill`
 
 ### Executive Summary Format
 
